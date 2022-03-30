@@ -529,6 +529,7 @@ int properties_init()
 			} else {
 			  Warning("Unknown size for " DEFAULT_PIGFILE_REGISTERED);
 			  Int3();
+			  PHYSFS_seek(Piggy_fp, 0);
 			}
 			[[fallthrough]];
 		case D1_MAC_PIGSIZE:

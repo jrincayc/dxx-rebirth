@@ -521,13 +521,13 @@ int properties_init()
 			Pigdata_start = 0;
 			break;
 		default:
-			Warning("Unknown size for " DEFAULT_PIGFILE_REGISTERED);
 			firstInt = PHYSFSX_readInt(Piggy_fp );
 			if(firstInt == 0x30474950) {  //Header PIG0
 			  Pigdata_start = 4;
 			  PCSharePig = 0;
 			  break;
 			} else {
+			  Warning("Unknown size for " DEFAULT_PIGFILE_REGISTERED);
 			  Int3();
 			}
 			[[fallthrough]];

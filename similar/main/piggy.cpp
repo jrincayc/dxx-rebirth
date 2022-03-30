@@ -508,6 +508,7 @@ int properties_init()
 
 	pigsize = PHYSFS_fileLength(Piggy_fp);
 	unsigned Pigdata_start;
+	int firstInt;
 	switch (pigsize) {
 		case D1_SHARE_BIG_PIGSIZE:
 		case D1_SHARE_10_PIGSIZE:
@@ -521,7 +522,14 @@ int properties_init()
 			break;
 		default:
 			Warning("Unknown size for " DEFAULT_PIGFILE_REGISTERED);
-			Int3();
+			firstInt = PHYSFSX_readInt(Piggy_fp );
+			if(firstInt == 0x30474950) {  //Header PIG0
+			  Pigdata_start = 4;
+			  PCSharePig = 0;
+			  break;
+			} else {
+			  Int3();
+			}
 			[[fallthrough]];
 		case D1_MAC_PIGSIZE:
 		case D1_MAC_SHARE_PIGSIZE:

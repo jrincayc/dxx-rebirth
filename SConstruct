@@ -4456,6 +4456,7 @@ class DXXCommon(LazyObjectConstructor):
 			Werror + 'cast-qual',
 			Werror + 'missing-declarations',
 			Werror + 'vla',
+			'-Wno-error=undef',
 		])
 		env.Append(
 			CXXFLAGS = ['-funsigned-char'],

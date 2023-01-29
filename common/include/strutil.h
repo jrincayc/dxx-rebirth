@@ -6,11 +6,12 @@
  */
 #pragma once
 
-#ifdef __cplusplus
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include "dxxsconf.h"
+#include "u_mem.h"
 #include "dsx-ns.h"
 #include <array>
 #include <vector>
@@ -38,13 +39,7 @@ __attribute_nonnull()
 int d_strnicmp(const char *s1, const char *s2, uint_fast32_t n);
 #endif
 extern void d_strlwr( char *s1 );
-#ifdef DEBUG_MEMORY_ALLOCATIONS
-char *d_strdup(const char *str, const char *, const char *, unsigned) __attribute_malloc();
-#define d_strdup(str)	(d_strdup(str, #str, __FILE__,__LINE__))
-#else
-#include <cstring>
-#define d_strdup strdup
-#endif
+std::unique_ptr<char[]> d_strdup(const char *str);
 
 #if DXX_USE_EDITOR
 void d_strupr(std::array<char, PATH_MAX> &out, const std::array<char, PATH_MAX> &in);
@@ -58,18 +53,21 @@ static inline int d_strnicmp(const char *s1, const char (&s2)[N])
 
 struct splitpath_t
 {
-	const char *drive_start, *drive_end, *path_start, *path_end, *base_start, *base_end, *ext_start;
+	const char *const base_start;
+	const char *const base_end;
 };
 
 // remove extension from filename, doesn't work with paths.
 void removeext(const char *filename, std::array<char, 20> &out);
 
 //give a filename a new extension, doesn't work with paths with no extension already there
-extern void change_filename_extension( char *dest, const char *src, const char *new_ext );
+[[nodiscard]]
+bool change_filename_extension(std::span<char> dest, const char *src, std::span<const char, 4> ext);
 
-// split an MS-DOS path into drive, directory path, filename without the extension (base) and extension.
-// if it's just a filename with no directory specified, this function will get 'base' and 'ext'
-void d_splitpath(const char *name, struct splitpath_t *path);
+/* Given an MS-DOS path, return pointers to the start of the basename and the
+ * start of the extension.
+ */
+splitpath_t d_splitpath(const char *name);
 
 class string_array_t
 {
@@ -102,5 +100,3 @@ static_assert(number_to_text_length<255, 16> == 2, "");
 static_assert(number_to_text_length<256, 16> == 3, "");
 
 }
-
-#endif

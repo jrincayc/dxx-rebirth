@@ -102,7 +102,7 @@ COPYRIGHT 1993-1998 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 
 #define COMPRESS_INTERVAL	5			// seconds
 
-static void med_show_warning(const char *s);
+static void med_show_warning(std::span<const char> s);
 
 //char *undo_status[128];
 
@@ -206,7 +206,7 @@ static inline void editor_slew_init()
 	auto &vmobjptr = Objects.vmptr;
 	Viewer = ConsoleObject;
 	slew_init(vmobjptr(ConsoleObject));
-	init_player_object();
+	init_player_object(LevelSharedPolygonModelState, *ConsoleObject);
 }
 
 int DropIntoDebugger()
@@ -474,9 +474,8 @@ int fuelcen_create_from_curseg()
 
 int repaircen_create_from_curseg()
 {
-	Int3();	//	-- no longer supported!
-//	Cursegp->special = segment_special::repaircen;
-//	fuelcen_activate(Cursegp, Cursegp->special);
+	Cursegp->special = segment_special::repaircen;
+	fuelcen_activate(Cursegp);
 	return 1;
 }
 
@@ -531,8 +530,7 @@ int fuelcen_delete_from_curseg() {
 //determine how from from the center of the window the farthest point will be
 #define SIDE_VIEW_FRAC (f1_0*8/10)	//80%
 
-
-static void move_player_2_segment_and_rotate(const vmsegptridx_t seg, const unsigned side)
+static void move_player_2_segment_and_rotate(const vmsegptridx_t seg, const sidenum_t side)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vmobjptr = Objects.vmptr;
@@ -825,14 +823,13 @@ void close_editor_screen()
 
 }
 
-static void med_show_warning(const char *s)
+static void med_show_warning(std::span<const char> s)
 {
 	grs_canvas &save_canv = *grd_curcanv;
 
 	//gr_pal_fade_in(grd_curscreen->pal);	//in case palette is blacked
 
-	ui_messagebox(-2,-2,1,s,"OK");
-
+	ui_messagebox(-2, -2, 1, s.data(), "OK");
 	gr_set_current_canvas(save_canv);
 }
 
@@ -1093,6 +1090,9 @@ window_event_result editor_dialog::callback_handler(const d_event &event)
 			case EVENT_LOOP_BEGIN_LOOP:
 				kconfig_begin_loop(Controls);
 				break;
+			case EVENT_LOOP_END_LOOP:
+				kconfig_end_loop(Controls, FrameTime);
+				break;
 
 			default:
 				break;
@@ -1105,7 +1105,7 @@ window_event_result editor_dialog::callback_handler(const d_event &event)
 
 		if (Gameview_lockstep) {
 			static segment *old_cursegp=NULL;
-			static int old_curside=-1;
+			static sidenum_t old_curside = side_none;
 
 			if (old_cursegp!=Cursegp || old_curside!=Curside) {
 				SetPlayerFromCursegMinusOne();

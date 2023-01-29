@@ -251,11 +251,12 @@ enum class select_dir_flag : uint8_t
 };
 
 __attribute_nonnull()
-static int select_file_recursive(const menu_title title, const std::array<char, PATH_MAX> &orig_path, const partial_range_t<const file_extension_t *> &ext_list, select_dir_flag select_dir, ntstring<PATH_MAX - 1> &userdata);
+static int select_file_recursive(const menu_title title, const std::array<char, PATH_MAX> &orig_path, const ranges::subrange<const file_extension_t *> &ext_list, select_dir_flag select_dir, ntstring<PATH_MAX - 1> &userdata);
 
 static window_event_result get_absolute_path(ntstring<PATH_MAX - 1> &full_path, const char *rel_path)
 {
-	PHYSFSX_getRealPath(rel_path, full_path);
+	if (!PHYSFSX_getRealPath(rel_path, full_path))
+		full_path.front() = 0;
 	return window_event_result::close;
 }
 
@@ -428,7 +429,7 @@ static int MakeNewPlayerFile(int allow_abort)
 		snprintf(filename, sizeof(filename), PLAYER_DIRECTORY_STRING("%s.plr"), name);
 		if (PHYSFSX_exists(filename, 0))
 		{
-			nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s '%s' %s", TXT_PLAYER, name, TXT_ALREADY_EXISTS);
+			nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s '%s' %s", TXT_PLAYER, name, TXT_ALREADY_EXISTS);
 			continue;
 		}
 		break;
@@ -442,6 +443,7 @@ static int MakeNewPlayerFile(int allow_abort)
 	return 1;
 }
 
+static void do_sound_menu();
 }
 
 }
@@ -471,7 +473,7 @@ static window_event_result player_menu_keycommand( listbox *lb,const d_event &ev
 			if (citem > 0)
 			{
 				int x = 1;
-				x = nm_messagebox(menu_title{nullptr}, 2, TXT_YES, TXT_NO, "%s %s?", TXT_DELETE_PILOT, items[citem]+((items[citem][0]=='$')?1:0) );
+				x = nm_messagebox(menu_title{nullptr}, {TXT_YES, TXT_NO}, "%s %s?", TXT_DELETE_PILOT, items[citem]+((items[citem][0]=='$')?1:0) );
 				if (x==0)	{
 					char plxfile[PATH_MAX], efffile[PATH_MAX], ngpfile[PATH_MAX];
 					int ret;
@@ -499,7 +501,7 @@ static window_event_result player_menu_keycommand( listbox *lb,const d_event &ev
 					}
 
 					if (ret)
-						nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s %s %s", TXT_COULDNT, TXT_DELETE_PILOT, items[citem]+((items[citem][0]=='$')?1:0) );
+						nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s %s %s", TXT_COULDNT, TXT_DELETE_PILOT, items[citem]+((items[citem][0]=='$')?1:0) );
 					else
 						listbox_delete_item(*lb, citem);
 				}
@@ -531,7 +533,7 @@ window_event_result pilot_selection_listbox::callback_handler(const d_event &eve
 			else
 			{
 				const auto p = item[citem];
-				InterfaceUniqueState.PilotName.copy_lower(p, strlen(p));
+				InterfaceUniqueState.PilotName.copy_lower(std::span(p, strlen(p)));
 				InterfaceUniqueState.update_window_title();
 			}
 			return window_event_result::close;
@@ -718,15 +720,12 @@ window_event_result dispatch_menu_option(const netgame_menu_item_index select)
 	switch (select)
 	{
 		case netgame_menu_item_index::start_new_multiplayer_game:
-			multi_protocol = MULTI_PROTO_UDP;
 			select_mission(mission_filter_mode::include_anarchy, menu_title{TXT_MULTI_MISSION}, net_udp_setup_game);
 			break;
 		case netgame_menu_item_index::join_multiplayer_game:
-			multi_protocol = MULTI_PROTO_UDP;
 			net_udp_manual_join_game();
 			break;
 		case netgame_menu_item_index::list_multiplayer_games:
-			multi_protocol = MULTI_PROTO_UDP;
 			net_udp_list_join_game(*grd_curcanv);
 			break;
 		default:
@@ -747,7 +746,9 @@ window_event_result main_menu::event_handler(const d_event &event)
 			RegisterPlayer();
 			break;
 		case EVENT_WINDOW_ACTIVATED:
+#if defined(DXX_BUILD_DESCENT_II)
 			load_palette(MENU_PALETTE,0,1);		//get correct palette
+#endif
 			keyd_time_when_last_pressed = timer_query();		// .. 20 seconds from now!
 			break;
 
@@ -760,7 +761,7 @@ window_event_result main_menu::event_handler(const d_event &event)
 		case EVENT_MOUSE_BUTTON_DOWN:
 		case EVENT_MOUSE_BUTTON_UP:
 			// Don't allow mousebutton-closing in main menu.
-			if (event_mouse_get_button(event) == MBTN_RIGHT)
+			if (event_mouse_get_button(event) == mbtn::right)
 				return window_event_result::ignored;
 			break;
 
@@ -781,7 +782,7 @@ window_event_result main_menu::event_handler(const d_event &event)
 #if DXX_USE_OGL
 					Screen_mode = -1;
 #endif
-					PlayMovie("intro.tex", "intro.mve",0);
+					PlayMovie("intro.tex", "intro.mve", play_movie_warn_missing::verbose);
 					songs_play_song(SONG_TITLE,1);
 					set_screen_mode(SCREEN_MENU);
 				}
@@ -845,7 +846,7 @@ static window_event_result demo_menu_keycommand( listbox *lb,const d_event &even
 			if (citem >= 0)
 			{
 				int x = 1;
-				x = nm_messagebox(menu_title{nullptr}, 2, TXT_YES, TXT_NO, "%s %s?", TXT_DELETE_DEMO, items[citem]+((items[citem][0]=='$')?1:0) );
+				x = nm_messagebox(menu_title{nullptr}, {TXT_YES, TXT_NO}, "%s %s?", TXT_DELETE_DEMO, items[citem]+((items[citem][0]=='$')?1:0) );
 				if (x==0)
 				{
 					int ret;
@@ -857,7 +858,7 @@ static window_event_result demo_menu_keycommand( listbox *lb,const d_event &even
 					ret = !PHYSFS_delete(name);
 
 					if (ret)
-						nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s %s %s", TXT_COULDNT, TXT_DELETE_DEMO, items[citem]+((items[citem][0]=='$')?1:0) );
+						nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s %s %s", TXT_COULDNT, TXT_DELETE_DEMO, items[citem]+((items[citem][0]=='$')?1:0) );
 					else
 						listbox_delete_item(*lb, citem);
 				}
@@ -868,19 +869,20 @@ static window_event_result demo_menu_keycommand( listbox *lb,const d_event &even
 
 		case KEY_CTRLED+KEY_C:
 			{
-				int x = 1;
-				char bakname[PATH_MAX];
+				std::array<char, PATH_MAX> bakname;
 
 				// Get backup name
-				change_filename_extension(bakname, items[citem]+((items[citem][0]=='$')?1:0), DEMO_BACKUP_EXT);
-				x = nm_messagebox(menu_title{nullptr}, 2, TXT_YES, TXT_NO,	"Are you sure you want to\n"
+				const auto ic = items[citem];
+				if (!change_filename_extension(bakname, ic, DEMO_BACKUP_EXT))
+					return window_event_result::handled;
+				const auto x = nm_messagebox(menu_title{nullptr}, {TXT_YES, TXT_NO}, "Are you sure you want to\n"
 								  "swap the endianness of\n"
 								  "%s? If the file is\n"
 								  "already endian native, D1X\n"
 								  "will likely crash. A backup\n"
-								  "%s will be created", items[citem]+((items[citem][0]=='$')?1:0), bakname );
+								  "%s will be created.", ic, bakname.data());
 				if (!x)
-					newdemo_swap_endian(items[citem]);
+					newdemo_swap_endian(ic);
 
 				return window_event_result::handled;
 			}
@@ -920,7 +922,7 @@ int select_demo()
 		return 0;	// memory error
 	if (!list[0])
 	{
-		nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s %s\n%s", TXT_NO_DEMO_FILES, TXT_USE_F5, TXT_TO_CREATE_ONE);
+		nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s %s\n%s", TXT_NO_DEMO_FILES, TXT_USE_F5, TXT_TO_CREATE_ONE);
 		return 0;
 	}
 
@@ -936,24 +938,24 @@ static int do_difficulty_menu()
 	using items_type = enumerated_array<newmenu_item, NDL, Difficulty_level_type>;
 	struct difficulty_prompt_menu : items_type, passive_newmenu
 	{
-		difficulty_prompt_menu(const unsigned Difficulty_level) :
+		difficulty_prompt_menu(const Difficulty_level_type Difficulty_level) :
 			items_type{{{
-				newmenu_item::nm_item_menu{MENU_DIFFICULTY_TEXT(Difficulty_0)},
-				newmenu_item::nm_item_menu{MENU_DIFFICULTY_TEXT(Difficulty_1)},
-				newmenu_item::nm_item_menu{MENU_DIFFICULTY_TEXT(Difficulty_2)},
-				newmenu_item::nm_item_menu{MENU_DIFFICULTY_TEXT(Difficulty_3)},
-				newmenu_item::nm_item_menu{MENU_DIFFICULTY_TEXT(Difficulty_4)},
+				newmenu_item::nm_item_menu{MENU_DIFFICULTY_TEXT(Difficulty_level_type::_0)},
+				newmenu_item::nm_item_menu{MENU_DIFFICULTY_TEXT(Difficulty_level_type::_1)},
+				newmenu_item::nm_item_menu{MENU_DIFFICULTY_TEXT(Difficulty_level_type::_2)},
+				newmenu_item::nm_item_menu{MENU_DIFFICULTY_TEXT(Difficulty_level_type::_3)},
+				newmenu_item::nm_item_menu{MENU_DIFFICULTY_TEXT(Difficulty_level_type::_4)},
 			}}},
-			passive_newmenu(menu_title{nullptr}, menu_subtitle{TXT_DIFFICULTY_LEVEL}, menu_filename{nullptr}, tiny_mode_flag::normal, tab_processing_flag::ignore, adjusted_citem::create(*static_cast<items_type *>(this), Difficulty_level), grd_curscreen->sc_canvas)
+			passive_newmenu(menu_title{nullptr}, menu_subtitle{TXT_DIFFICULTY_LEVEL}, menu_filename{nullptr}, tiny_mode_flag::normal, tab_processing_flag::ignore, adjusted_citem::create(*static_cast<items_type *>(this), underlying_value(Difficulty_level)), grd_curscreen->sc_canvas)
 		{
 		}
 	};
 	auto &Difficulty_level = GameUniqueState.Difficulty_level;
 	const unsigned s = run_blocking_newmenu<difficulty_prompt_menu>(Difficulty_level);
 
-	if (s <= Difficulty_4)
+	if (const auto od = build_difficulty_level_from_untrusted(s))
 	{
-		const auto d = static_cast<Difficulty_level_type>(s);
+		const auto d = *od;
 		if (d != Difficulty_level)
 		{
 			PlayerCfg.DefaultDifficulty = d;
@@ -1015,7 +1017,7 @@ window_event_result do_new_game_menu()
 
 			if (*p || new_level_num <= 0 || new_level_num > last_level)
 			{
-				nm_messagebox(menu_title{TXT_INVALID_LEVEL}, 1, TXT_OK, "You must enter a\npositive level number\nless than or\nequal to %u.\n", static_cast<unsigned>(Current_mission->last_level));
+				nm_messagebox(menu_title{TXT_INVALID_LEVEL}, {TXT_OK}, "You must enter a\npositive level number\nless than or\nequal to %u.\n", static_cast<unsigned>(Current_mission->last_level));
 			}
 			else
 				break;
@@ -1032,13 +1034,6 @@ window_event_result do_new_game_menu()
 	return window_event_result::close;	// exit mission listbox
 }
 
-}
-
-}
-
-static void do_sound_menu();
-namespace dsx {
-namespace {
 static void hud_config();
 static void graphics_config();
 static void gameplay_config();
@@ -1266,7 +1261,7 @@ void screen_resolution_menu::check_apply_preset_resolution() const
 			return 0;
 		return ni.value;
 	};
-	const auto i = std::find_if(r.begin(), r.end(), predicate);
+	const auto &&i = ranges::find_if(r, predicate);
 	if (i == r.end())
 		return;
 	const auto requested_mode = std::get<0>(*i);
@@ -1350,55 +1345,49 @@ void screen_resolution_menu::apply_resolution(const screen_mode new_mode) const
 	{
 		gr_set_mode(new_mode);
 		Game_screen_mode = new_mode;
-		if (Game_wind) // shortly activate Game_wind so it's canvas will align to new resolution. really minor glitch but whatever
+		if (const auto g = Game_wind) // shortly activate Game_wind so it's canvas will align to new resolution. really minor glitch but whatever
 		{
-			{
-				const d_event event{EVENT_WINDOW_ACTIVATED};
-				WINDOW_SEND_EVENT(Game_wind);
-			}
-			{
-				const d_event event{EVENT_WINDOW_DEACTIVATED};
-				WINDOW_SEND_EVENT(Game_wind);
-			}
+			g->send_event(d_event{EVENT_WINDOW_ACTIVATED});
+			g->send_event(d_event{EVENT_WINDOW_DEACTIVATED});
 		}
 	}
 	game_init_render_sub_buffers(*grd_curcanv, 0, 0, SM_W(Game_screen_mode), SM_H(Game_screen_mode));
 }
 
-template <typename PMF>
+template <std::size_t Offset, auto PMF>
 struct copy_sensitivity
 {
-	const std::size_t offset;
-	const PMF pmf;
-	copy_sensitivity(std::size_t offset, const PMF pmf) :
-		offset(offset), pmf(pmf)
-	{
-	}
+	static constexpr std::integral_constant<std::size_t, Offset> offset{};
+	static constexpr std::integral_constant<decltype(PMF), PMF> pmf{};
 };
 
 template <typename XRange, typename MenuItems, typename... CopyParameters>
 void copy_sensitivity_from_menu_to_cfg2(XRange &&r, const MenuItems &menuitems, const CopyParameters ... cn)
 {
 	for (const auto i : r)
-		(((PlayerCfg.*(cn.pmf))[i] = menuitems[1 + i + cn.offset].value), ...);
+		(((PlayerCfg.*(cn.pmf.value))[
+			(typename std::remove_reference<
+				decltype(PlayerCfg.*(cn.pmf.value))
+				>::type::index_type{i})
+		] = menuitems[1 + i + cn.offset].value), ...);
 }
 
 template <typename MenuItems, typename CopyParameter0, typename... CopyParameterN>
 void copy_sensitivity_from_menu_to_cfg(const MenuItems &menuitems, const CopyParameter0 c0, const CopyParameterN ... cn)
 {
-	copy_sensitivity_from_menu_to_cfg2(xrange(std::size(PlayerCfg.*(c0.pmf))), menuitems, c0, cn...);
+	copy_sensitivity_from_menu_to_cfg2(xrange(std::size(PlayerCfg.*(c0.pmf.value))), menuitems, c0, cn...);
 }
 
-#define DXX_INPUT_SENSITIVITY(VERB,OPT,VAL)	\
-	DXX_MENUITEM(VERB, SLIDER, TXT_TURN_LR, opt_##OPT##_turn_lr, VAL[0], 0, 16)	\
-	DXX_MENUITEM(VERB, SLIDER, TXT_PITCH_UD, opt_##OPT##_pitch_ud, VAL[1], 0, 16)	\
-	DXX_MENUITEM(VERB, SLIDER, TXT_SLIDE_LR, opt_##OPT##_slide_lr, VAL[2], 0, 16)	\
-	DXX_MENUITEM(VERB, SLIDER, TXT_SLIDE_UD, opt_##OPT##_slide_ud, VAL[3], 0, 16)	\
-	DXX_MENUITEM(VERB, SLIDER, TXT_BANK_LR, opt_##OPT##_bank_lr, VAL[4], 0, 16)	\
+#define DXX_INPUT_SENSITIVITY(VERB,OPT,VAL,VALUE_INDEX_ENUM_SCOPE)	\
+	DXX_MENUITEM(VERB, SLIDER, TXT_TURN_LR, opt_##OPT##_turn_lr, VAL[VALUE_INDEX_ENUM_SCOPE::turn_lr], 0, 16)	\
+	DXX_MENUITEM(VERB, SLIDER, TXT_PITCH_UD, opt_##OPT##_pitch_ud, VAL[VALUE_INDEX_ENUM_SCOPE::pitch_ud], 0, 16)	\
+	DXX_MENUITEM(VERB, SLIDER, TXT_SLIDE_LR, opt_##OPT##_slide_lr, VAL[VALUE_INDEX_ENUM_SCOPE::slide_lr], 0, 16)	\
+	DXX_MENUITEM(VERB, SLIDER, TXT_SLIDE_UD, opt_##OPT##_slide_ud, VAL[VALUE_INDEX_ENUM_SCOPE::slide_ud], 0, 16)	\
+	DXX_MENUITEM(VERB, SLIDER, TXT_BANK_LR, opt_##OPT##_bank_lr, VAL[VALUE_INDEX_ENUM_SCOPE::bank_lr], 0, 16)	\
 
 #define DXX_INPUT_CONFIG_MENU(VERB)	\
 	DXX_MENUITEM(VERB, TEXT, "Keyboard Sensitivity:", opt_label_kb)	\
-	DXX_INPUT_SENSITIVITY(VERB,kb,PlayerCfg.KeyboardSens)	             \
+	DXX_INPUT_SENSITIVITY(VERB,kb,PlayerCfg.KeyboardSens,player_config_keyboard_index)	             \
 
 namespace keyboard_sensitivity {
 
@@ -1430,7 +1419,7 @@ window_event_result menu::event_handler(const d_event &event)
 	switch (event.type)
 	{
 		case EVENT_WINDOW_CLOSE:
-			copy_sensitivity_from_menu_to_cfg(m, copy_sensitivity(opt_label_kb, &player_config::KeyboardSens));
+			copy_sensitivity_from_menu_to_cfg(m, copy_sensitivity<opt_label_kb, &player_config::KeyboardSens>());
 			break;
 		default:
 			break;
@@ -1449,23 +1438,23 @@ static void input_config_keyboard()
 	(void)menu;
 }
 
-#define DXX_INPUT_SENSITIVITY(VERB,OPT,VAL)	                           \
-	DXX_MENUITEM(VERB, SLIDER, TXT_TURN_LR, opt_##OPT##_turn_lr, VAL[0], 0, 16)	\
-	DXX_MENUITEM(VERB, SLIDER, TXT_PITCH_UD, opt_##OPT##_pitch_ud, VAL[1], 0, 16)	\
-	DXX_MENUITEM(VERB, SLIDER, TXT_SLIDE_LR, opt_##OPT##_slide_lr, VAL[2], 0, 16)	\
-	DXX_MENUITEM(VERB, SLIDER, TXT_SLIDE_UD, opt_##OPT##_slide_ud, VAL[3], 0, 16)	\
-	DXX_MENUITEM(VERB, SLIDER, TXT_BANK_LR, opt_##OPT##_bank_lr, VAL[4], 0, 16)	\
+#define DXX_INPUT_SENSITIVITY(VERB,OPT,VAL,VALUE_INDEX_ENUM_SCOPE)	                           \
+	DXX_MENUITEM(VERB, SLIDER, TXT_TURN_LR, opt_##OPT##_turn_lr, VAL[VALUE_INDEX_ENUM_SCOPE::turn_lr], 0, 16)	\
+	DXX_MENUITEM(VERB, SLIDER, TXT_PITCH_UD, opt_##OPT##_pitch_ud, VAL[VALUE_INDEX_ENUM_SCOPE::pitch_ud], 0, 16)	\
+	DXX_MENUITEM(VERB, SLIDER, TXT_SLIDE_LR, opt_##OPT##_slide_lr, VAL[VALUE_INDEX_ENUM_SCOPE::slide_lr], 0, 16)	\
+	DXX_MENUITEM(VERB, SLIDER, TXT_SLIDE_UD, opt_##OPT##_slide_ud, VAL[VALUE_INDEX_ENUM_SCOPE::slide_ud], 0, 16)	\
+	DXX_MENUITEM(VERB, SLIDER, TXT_BANK_LR, opt_##OPT##_bank_lr, VAL[VALUE_INDEX_ENUM_SCOPE::bank_lr], 0, 16)	\
 
-#define DXX_INPUT_THROTTLE_SENSITIVITY(VERB,OPT,VAL)	\
-	DXX_INPUT_SENSITIVITY(VERB,OPT,VAL)	\
-	DXX_MENUITEM(VERB, SLIDER, TXT_THROTTLE, opt_##OPT##_throttle, VAL[5], 0, 16)	\
+#define DXX_INPUT_THROTTLE_SENSITIVITY(VERB,OPT,VAL,VALUE_INDEX_ENUM_SCOPE)	\
+	DXX_INPUT_SENSITIVITY(VERB,OPT,VAL,VALUE_INDEX_ENUM_SCOPE)	\
+	DXX_MENUITEM(VERB, SLIDER, TXT_THROTTLE, opt_##OPT##_throttle, VAL[VALUE_INDEX_ENUM_SCOPE::throttle], 0, 16)	\
 
 #define DXX_INPUT_CONFIG_MENU(VERB)	                                   \
 	DXX_MENUITEM(VERB, TEXT, "Mouse Sensitivity:", opt_label_ms)	             \
-	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,ms,PlayerCfg.MouseSens)	\
+	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,ms,PlayerCfg.MouseSens,player_config_mouse_index)	\
 	DXX_MENUITEM(VERB, TEXT, "", opt_label_blank_ms)	\
 	DXX_MENUITEM(VERB, TEXT, "Mouse Overrun Buffer:", opt_label_mo)	\
-	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,mo,PlayerCfg.MouseOverrun)	\
+	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,mo,PlayerCfg.MouseOverrun,player_config_mouse_index)	\
 	DXX_MENUITEM(VERB, TEXT, "", opt_label_blank_mo)	\
 	DXX_MENUITEM(VERB, TEXT, "Mouse FlightSim Deadzone:", opt_label_mfsd)	\
 	DXX_MENUITEM(VERB, SLIDER, "X/Y", opt_mfsd_deadzone, PlayerCfg.MouseFSDead, 0, 16)	\
@@ -1503,8 +1492,8 @@ window_event_result menu::event_handler(const d_event &event)
 		case EVENT_WINDOW_CLOSE:
 			PlayerCfg.MouseFSDead = m[opt_mfsd_deadzone].value;
 			copy_sensitivity_from_menu_to_cfg(m,
-				copy_sensitivity(opt_label_ms, &player_config::MouseSens),
-				copy_sensitivity(opt_label_mo, &player_config::MouseOverrun)
+				copy_sensitivity<opt_label_ms, &player_config::MouseSens>(),
+				copy_sensitivity<opt_label_mo, &player_config::MouseOverrun>()
 			);
 			break;
 		default:
@@ -1527,16 +1516,16 @@ namespace joystick_sensitivity {
 
 #define DXX_INPUT_CONFIG_MENU(VERB)	                                   \
 	DXX_MENUITEM(VERB, TEXT, "Joystick Sensitivity:", opt_label_js)	          \
-	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,js,PlayerCfg.JoystickSens)	\
+	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,js,PlayerCfg.JoystickSens,player_config_joystick_index)	\
 	DXX_MENUITEM(VERB, TEXT, "", opt_label_blank_js)	\
 	DXX_MENUITEM(VERB, TEXT, "Joystick Linearity:", opt_label_jl)	\
-	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,jl,PlayerCfg.JoystickLinear)	  \
+	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,jl,PlayerCfg.JoystickLinear,player_config_joystick_index)	  \
 	DXX_MENUITEM(VERB, TEXT, "", opt_label_blank_jl)	\
 	DXX_MENUITEM(VERB, TEXT, "Joystick Linear Speed:", opt_label_jp)	\
-	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,jp,PlayerCfg.JoystickSpeed)	   \
+	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,jp,PlayerCfg.JoystickSpeed,player_config_joystick_index)	   \
 	DXX_MENUITEM(VERB, TEXT, "", opt_label_blank_jp)	\
 	DXX_MENUITEM(VERB, TEXT, "Joystick Deadzone:", opt_label_jd)	\
-	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,jd,PlayerCfg.JoystickDead)	    \
+	DXX_INPUT_THROTTLE_SENSITIVITY(VERB,jd,PlayerCfg.JoystickDead,player_config_joystick_index)	    \
 
 	class menu_items
 	{
@@ -1569,10 +1558,10 @@ window_event_result menu::event_handler(const d_event &event)
 	{
 		case EVENT_WINDOW_CLOSE:
 			copy_sensitivity_from_menu_to_cfg(m,
-				copy_sensitivity(opt_label_js, &player_config::JoystickSens),
-				copy_sensitivity(opt_label_jl, &player_config::JoystickLinear),
-				copy_sensitivity(opt_label_jp, &player_config::JoystickSpeed),
-				copy_sensitivity(opt_label_jd, &player_config::JoystickDead)
+				copy_sensitivity<opt_label_js, &player_config::JoystickSens>(),
+				copy_sensitivity<opt_label_jl, &player_config::JoystickLinear>(),
+				copy_sensitivity<opt_label_jp, &player_config::JoystickSpeed>(),
+				copy_sensitivity<opt_label_jd, &player_config::JoystickDead>()
 			);
 			break;
 		default:
@@ -1636,6 +1625,11 @@ class input_config_menu_items
 	DXX_MENUITEM(VERB, CHECK, "Multi Coop (if host allows)", opt_ic_mouselook_mp_cooperative, PlayerCfg.MouselookFlags & MouselookMode::MPCoop)	\
 	DXX_MENUITEM(VERB, CHECK, "Multi Anarchy (if host allows)", opt_ic_mouselook_mp_anarchy, PlayerCfg.MouselookFlags & MouselookMode::MPAnarchy)	\
 	DXX_MENUITEM(VERB, TEXT, "", opt_label_blank_mouselook)	\
+	DXX_MENUITEM(VERB, TEXT, "Release pitch lock:", opt_label_pitch_lock_mode) \
+	DXX_MENUITEM(VERB, CHECK, "Single player", opt_ic_pitch_lock_sp, PlayerCfg.PitchLockFlags & MouselookMode::Singleplayer) \
+	DXX_MENUITEM(VERB, CHECK, "Multi Coop (if host allows)", opt_ic_pitch_lock_mp_coop, PlayerCfg.PitchLockFlags & MouselookMode::MPCoop) \
+	DXX_MENUITEM(VERB, CHECK, "Multi Anarchy (if host allows)", opt_ic_pitch_lock_mp_anarchy, PlayerCfg.PitchLockFlags & MouselookMode::MPAnarchy) \
+	DXX_MENUITEM(VERB, TEXT, "", opt_label_blank_rotational_setting)	\
 	DXX_MENUITEM(VERB, MENU, "GAME SYSTEM KEYS", opt_ic_help0)	\
 	DXX_MENUITEM(VERB, MENU, "NETGAME SYSTEM KEYS", opt_ic_help1)	\
 	DXX_MENUITEM(VERB, MENU, "DEMO SYSTEM KEYS", opt_ic_help2)	\
@@ -1683,6 +1677,7 @@ window_event_result input_config_menu::event_handler(const d_event &event)
 		{
 			const auto citem = static_cast<const d_change_event &>(event).citem;
 			MouselookMode mousemode;
+			MouselookMode pitchlock;
 #if DXX_MAX_JOYSTICKS
 			if (citem == opt_ic_usejoy)
 			{
@@ -1722,6 +1717,15 @@ window_event_result input_config_menu::event_handler(const d_event &event)
 				else
 					PlayerCfg.MouselookFlags &= ~mousemode;
 			}
+			else if ((citem == opt_ic_pitch_lock_sp && (pitchlock = MouselookMode::Singleplayer, true)) ||
+					(citem == opt_ic_pitch_lock_mp_coop && (pitchlock = MouselookMode::MPCoop, true)) ||
+					(citem == opt_ic_pitch_lock_mp_anarchy && (pitchlock = MouselookMode::MPAnarchy, true))) {
+				if (items[citem].value)
+					PlayerCfg.PitchLockFlags |= pitchlock;
+				else
+					PlayerCfg.PitchLockFlags &= ~pitchlock;
+			}
+
 			break;
 		}
 		case EVENT_NEWMENU_SELECTED:
@@ -1860,9 +1864,9 @@ struct hud_style_config_menu_items
 {
 #define DXX_HUD_STYLE_MENU(VERB)	\
 	DXX_MENUITEM(VERB, TEXT, "View style:", opt_viewstyle_label)	\
-	DXX_MENUITEM(VERB, RADIO, "Cockpit", opt_viewstyle_cockpit, PlayerCfg.CockpitMode[1] == CM_FULL_COCKPIT, optgrp_viewstyle)	\
-	DXX_MENUITEM(VERB, RADIO, "Status bar", opt_viewstyle_bar, PlayerCfg.CockpitMode[1] == CM_STATUS_BAR, optgrp_viewstyle)	\
-	DXX_MENUITEM(VERB, RADIO, "Full screen", opt_viewstyle_fullscreen, PlayerCfg.CockpitMode[1] == CM_FULL_SCREEN, optgrp_viewstyle)	\
+	DXX_MENUITEM(VERB, RADIO, "Cockpit", opt_viewstyle_cockpit, PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_cockpit, optgrp_viewstyle)	\
+	DXX_MENUITEM(VERB, RADIO, "Status bar", opt_viewstyle_bar, PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar, optgrp_viewstyle)	\
+	DXX_MENUITEM(VERB, RADIO, "Full screen", opt_viewstyle_fullscreen, PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen, optgrp_viewstyle)	\
 	DXX_MENUITEM(VERB, TEXT, "HUD style:", opt_hudstyle_label)	\
 	DXX_MENUITEM(VERB, RADIO, "Standard", opt_hudstyle_standard, PlayerCfg.HudMode == HudType::Standard, optgrp_hudstyle)	\
 	DXX_MENUITEM(VERB, RADIO, "Alternate #1", opt_hudstyle_alt1, PlayerCfg.HudMode == HudType::Alternate1, optgrp_hudstyle)	\
@@ -1899,11 +1903,11 @@ window_event_result hud_style_config_menu::event_handler(const d_event &event)
 	{
 		case EVENT_WINDOW_CLOSE:
 		{
-			enum cockpit_mode_t new_mode = m[opt_viewstyle_cockpit].value
-				? CM_FULL_COCKPIT
+			const auto new_mode = m[opt_viewstyle_cockpit].value
+				? cockpit_mode_t::full_cockpit
 				: m[opt_viewstyle_bar].value
-					? CM_STATUS_BAR
-					: CM_FULL_SCREEN;
+					? cockpit_mode_t::status_bar
+					: cockpit_mode_t::full_screen;
 			select_cockpit(new_mode);
 			PlayerCfg.CockpitMode[0] = new_mode;
 			PlayerCfg.HudMode = m[opt_hudstyle_standard].value
@@ -2203,23 +2207,23 @@ struct browser_storage
 {
 	struct target_path_not_mounted {};
 	// List of file extensions we're looking for (if looking for a music file many types are possible)
-	const partial_range_t<const file_extension_t *> ext_range;
+	const ranges::subrange<const file_extension_t *> ext_range;
 	const select_dir_flag select_dir;		// Allow selecting the current directory (e.g. for Jukebox level song directory)
 	physfsx_mounted_path view_path;	// The absolute path we're currently looking at
 	string_array_t list;
-	browser_storage(const char *orig_path, const partial_range_t<const file_extension_t *> &ext_range, const select_dir_flag select_dir, const char *const sep) :
+	browser_storage(const char *orig_path, const ranges::subrange<const file_extension_t *> &ext_range, const select_dir_flag select_dir, const char *const sep) :
 		ext_range(ext_range), select_dir(select_dir),
 		/* view_path is trivially constructed, then properly initialized as
 		 * a side effect of preparing the string list */
 		list(construct_string_list(orig_path, view_path, ext_range, select_dir, sep))
 	{
 	}
-	static string_array_t construct_string_list(const char *orig_path, physfsx_mounted_path &view_path, const partial_range_t<const file_extension_t *> &r, const select_dir_flag select_dir, const char *const sep);
+	static string_array_t construct_string_list(const char *orig_path, physfsx_mounted_path &view_path, const ranges::subrange<const file_extension_t *> &r, const select_dir_flag select_dir, const char *const sep);
 };
 
 struct browser : browser_storage, listbox
 {
-	browser(const char *orig_path, menu_title title, const partial_range_t<const file_extension_t *> &r, const select_dir_flag select_dir, const char *const sep, ntstring<PATH_MAX - 1> &userdata) :
+	browser(const char *orig_path, menu_title title, const ranges::subrange<const file_extension_t *> &r, const select_dir_flag select_dir, const char *const sep, ntstring<PATH_MAX - 1> &userdata) :
 		browser_storage(orig_path, r, select_dir, sep),
 		listbox(0, list.pointer().size(), &list.pointer().front(), title, grd_curscreen->sc_canvas, 1),
 		userdata(userdata)
@@ -2232,7 +2236,7 @@ struct browser : browser_storage, listbox
 struct list_directory_context
 {
 	string_array_t &string_list;
-	const partial_range_t<const file_extension_t *> ext_range;
+	const ranges::subrange<const file_extension_t *> ext_range;
 	const std::array<char, PATH_MAX> &path;
 };
 
@@ -2267,17 +2271,17 @@ window_event_result browser::callback_handler(const d_event &event, window_event
 				}};
 				struct drive_letter_menu : passive_newmenu
 				{
-					drive_letter_menu(grs_canvas &canvas, partial_range_t<newmenu_item *> items) :
+					drive_letter_menu(grs_canvas &canvas, const ranges::subrange<newmenu_item *> items) :
 						passive_newmenu(menu_title{nullptr}, menu_subtitle{"Enter drive letter"}, menu_filename{nullptr}, tiny_mode_flag::normal, tab_processing_flag::ignore, adjusted_citem::create(items, 0), canvas)
 						{
 						}
 				};
 				const auto rval = run_blocking_newmenu<drive_letter_menu>(*grd_curcanv, m);
 				const auto t0 = text[0];
-				std::array<char, PATH_MAX> newpath;
-				snprintf(newpath.data(), newpath.size(), "%c:%s", t0, sep);
 				if (!rval && t0)
 				{
+					std::array<char, PATH_MAX> newpath;
+					snprintf(newpath.data(), newpath.size(), "%c:%s", t0, sep);
 					select_file_recursive(title, newpath, ext_range, select_dir, userdata);
 					// close old box.
 					return window_event_result::close;
@@ -2330,10 +2334,19 @@ window_event_result browser::callback_handler(const d_event &event, window_event
 			{
 				const size_t len_newpath = strlen(newpath.data());
 				const size_t len_item = strlen(list[citem]);
-				if (len_newpath + len_item < newpath.size())
+				/* The separator may or may not be included, depending on
+				 * whether one is already present.  Regardless of whether a new
+				 * separator is printed by the block, require sufficient space
+				 * for it to fit.  This is pessimistic, but should discourage
+				 * gcc's -Wformat-truncation from warning about insufficient
+				 * buffer capacity.  In practice, users should never have a
+				 * path that approaches this limit, so the `if` test should
+				 * succeed in all reasonable cases.
+				 */
+				const size_t len_sep = strlen(sep);
+				if (len_newpath + len_item + len_sep < newpath.size())
 				{
-					const size_t len_sep = strlen(sep);
-					snprintf(&newpath[len_newpath], newpath.size() - len_newpath, "%s%s", strncmp(&newpath[len_newpath - len_sep], sep, len_sep) ? sep : "", list[citem]);
+					snprintf(&newpath[len_newpath], newpath.size() - len_newpath, "%s%s", (len_newpath >= len_sep && strncmp(&newpath[len_newpath - len_sep], sep, len_sep)) ? sep : "", list[citem]);
 				}
 			}
 			if ((citem == 0) || PHYSFS_isDirectory(list[citem]))
@@ -2351,18 +2364,15 @@ window_event_result browser::callback_handler(const d_event &event, window_event
 	return window_event_result::ignored;
 }
 
-static int select_file_recursive(const menu_title title, const std::array<char, PATH_MAX> &orig_path_storage, const partial_range_t<const file_extension_t *> &ext_range, const select_dir_flag select_dir, ntstring<PATH_MAX - 1> &userdata)
+static int select_file_recursive(const menu_title title, const std::array<char, PATH_MAX> &orig_path_storage, const ranges::subrange<const file_extension_t *> &ext_range, const select_dir_flag select_dir, ntstring<PATH_MAX - 1> &userdata)
 {
 	const auto sep = PHYSFS_getDirSeparator();
 	auto orig_path = orig_path_storage.data();
 	std::array<char, PATH_MAX> new_path;
 
 	// Check for a PhysicsFS path first, saves complication!
-	if (strncmp(orig_path, sep, strlen(sep)) && PHYSFSX_exists(orig_path,0))
-	{
-		PHYSFSX_getRealPath(orig_path, new_path);
+	if (strncmp(orig_path, sep, strlen(sep)) && PHYSFSX_exists(orig_path, 0) && PHYSFSX_getRealPath(orig_path, new_path))
 		orig_path = new_path.data();
-	}
 
 	try {
 		auto b = window_create<browser>(orig_path, title, ext_range, select_dir, sep, userdata);
@@ -2373,7 +2383,7 @@ static int select_file_recursive(const menu_title title, const std::array<char, 
 	}
 }
 
-string_array_t browser_storage::construct_string_list(const char *orig_path, physfsx_mounted_path &view_path, const partial_range_t<const file_extension_t *> &ext_range, const select_dir_flag select_dir, const char *const sep)
+string_array_t browser_storage::construct_string_list(const char *orig_path, physfsx_mounted_path &view_path, const ranges::subrange<const file_extension_t *> &ext_range, const select_dir_flag select_dir, const char *const sep)
 {
 	view_path.path.front() = 0;
 	// Set the viewing directory to orig_path, or some parent of it
@@ -2700,18 +2710,11 @@ window_event_result sound_menu::event_handler(const d_event &event)
 	return newmenu::event_handler(event);
 }
 
-}
-}
-
 void do_sound_menu()
 {
 	auto menu = window_create<sound_menu>(grd_curscreen->sc_canvas);
 	(void)menu;
 }
-
-namespace dsx {
-
-namespace {
 
 #if defined(DXX_BUILD_DESCENT_I)
 #define DSX_GAME_SPECIFIC_OPTIONS(VERB)	\
@@ -2861,14 +2864,14 @@ namespace {
 struct polygon_models_viewer_window : window
 {
 	vms_angvec ang{0, 0, F0_5 - 1};
-	unsigned view_idx = 0;
+	polygon_model_index view_idx{};
 	using window::window;
 	virtual window_event_result event_handler(const d_event &) override;
 };
 
 struct gamebitmaps_viewer_window : window
 {
-	unsigned view_idx = 0;
+	uint16_t view_idx = 0;
 	using window::window;
 	virtual window_event_result event_handler(const d_event &) override;
 };
@@ -2892,15 +2895,21 @@ window_event_result polygon_models_viewer_window::event_handler(const d_event &e
 				case KEY_ESC:
 					return window_event_result::close;
 				case KEY_SPACEBAR:
-					view_idx ++;
-					if (view_idx >= LevelSharedPolygonModelState.N_polygon_models)
-						view_idx = 0;
+					{
+						auto v = underlying_value(view_idx);
+						if (++ v >= LevelSharedPolygonModelState.N_polygon_models)
+							v = 0;
+						view_idx = polygon_model_index{v};
+					}
 					break;
 				case KEY_BACKSP:
-					if (!view_idx)
-						view_idx = LevelSharedPolygonModelState.N_polygon_models - 1;
-					else
-						view_idx --;
+					{
+						auto v = underlying_value(view_idx);
+						const auto n = LevelSharedPolygonModelState.N_polygon_models;
+						if (-- v >= n)
+							v = n - 1;
+						view_idx = polygon_model_index{v};
+					}
 					break;
 				case KEY_A:
 					ang.h -= 100;
@@ -2932,14 +2941,17 @@ window_event_result polygon_models_viewer_window::event_handler(const d_event &e
 			timer_delay(F1_0/60);
 			{
 				auto &canvas = *grd_curcanv;
-				draw_model_picture(canvas, view_idx, ang);
+				auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
+				draw_model_picture(canvas, Polygon_models[view_idx], ang);
 				gr_set_fontcolor(canvas, BM_XRGB(255, 255, 255), -1);
 				auto &game_font = *GAME_FONT;
-				gr_printf(canvas, game_font, FSPACX(1), FSPACY(1), "ESC: leave\nSPACE/BACKSP: next/prev model (%i/%i)\nA/D: rotate y\nW/S: rotate x\nQ/E: rotate z\nR: reset orientation", view_idx, LevelSharedPolygonModelState.N_polygon_models - 1);
+				gr_printf(canvas, game_font, FSPACX(1), FSPACY(1), "ESC: leave\nSPACE/BACKSP: next/prev model (%i/%i)\nA/D: rotate y\nW/S: rotate x\nQ/E: rotate z\nR: reset orientation", underlying_value(view_idx), LevelSharedPolygonModelState.N_polygon_models - 1);
 			}
 			break;
 		case EVENT_WINDOW_CLOSE:
+#if defined(DXX_BUILD_DESCENT_II)
 			load_palette(MENU_PALETTE,0,1);
+#endif
 			key_toggle_repeat(0);
 			break;
 		default:
@@ -2960,8 +2972,6 @@ window_event_result gamebitmaps_viewer_window::event_handler(const d_event &even
 #if DXX_USE_OGL
 	float scale = 1.0;
 #endif
-	bitmap_index bi;
-	grs_bitmap *bm;
 
 	switch (event.type)
 	{
@@ -2991,11 +3001,11 @@ window_event_result gamebitmaps_viewer_window::event_handler(const d_event &even
 			}
 			return window_event_result::handled;
 		case EVENT_WINDOW_DRAW:
-			bi.index = view_idx;
-			bm = &GameBitmaps[view_idx];
+			{
+				const bitmap_index bi{view_idx};
+				grs_bitmap *const bm = &GameBitmaps[bi];
 			timer_delay(F1_0/60);
 			PIGGY_PAGE_IN(bi);
-			{
 				auto &canvas = *grd_curcanv;
 				gr_clear_canvas(canvas, BM_XRGB(0,0,0));
 #if DXX_USE_OGL
@@ -3010,7 +3020,9 @@ window_event_result gamebitmaps_viewer_window::event_handler(const d_event &even
 			}
 			break;
 		case EVENT_WINDOW_CLOSE:
+#if defined(DXX_BUILD_DESCENT_II)
 			load_palette(MENU_PALETTE,0,1);
+#endif
 			key_toggle_repeat(0);
 			break;
 		default:

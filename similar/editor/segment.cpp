@@ -50,6 +50,7 @@ COPYRIGHT 1993-1998 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include "d_range.h"
 #include "d_enumerate.h"
 #include "d_zip.h"
+#include "partial_range.h"
 #include "segiter.h"
 
 int	Do_duplicate_vertex_check = 0;		// Gets set to 1 in med_create_duplicate_vertex, means to check for duplicate vertices in compress_mine
@@ -172,8 +173,9 @@ namespace dsx {
 //	Scans the Segments array.
 segnum_t get_free_segment_number(segment_array &Segments)
 {
-	for (segnum_t segnum=0; segnum<MAX_SEGMENTS; segnum++)
-		if (Segments[segnum].segnum == segment_none) {
+	for (const auto &&[segnum, seg] : enumerate(Segments))
+		if (seg.segnum == segment_none)
+		{
 			++ LevelSharedSegmentState.Num_segments;
 			if (segnum > Highest_segment_index)
 				Segments.set_count(segnum + 1);
@@ -181,8 +183,7 @@ segnum_t get_free_segment_number(segment_array &Segments)
 		}
 
 	Assert(0);
-
-	return 0;
+	return segnum_t{};
 }
 
 // -------------------------------------------------------------------------------
@@ -383,37 +384,37 @@ void med_extract_matrix_from_segment(const shared_segment &sp, vms_matrix &rotma
 // ------------------------------------------------------------------------------------------
 //	Given a rotation matrix *rotmat which describes the orientation of a segment
 //	and a side destside, return the rotation matrix which describes the orientation for the side.
-void update_matrix_based_on_side(vms_matrix &rotmat,int destside)
+void update_matrix_based_on_side(vms_matrix &rotmat, const sidenum_t destside)
 {
         vms_angvec      rotvec;
 
 	switch (destside) {
-		case WLEFT:
+		case sidenum_t::WLEFT:
                         vm_angvec_make(&rotvec,0,0,-16384);
 			rotmat = vm_matrix_x_matrix(rotmat, vm_angles_2_matrix(rotvec));
 			break;
 
-		case WTOP:
+		case sidenum_t::WTOP:
                         vm_angvec_make(&rotvec,-16384,0,0);
 			rotmat = vm_matrix_x_matrix(rotmat, vm_angles_2_matrix(rotvec));
 			break;
 
-		case WRIGHT:
+		case sidenum_t::WRIGHT:
                         vm_angvec_make(&rotvec,0,0,16384);
 			rotmat = vm_matrix_x_matrix(rotmat, vm_angles_2_matrix(rotvec));
 			break;
 
-		case WBOTTOM:
+		case sidenum_t::WBOTTOM:
                         vm_angvec_make(&rotvec,+16384,-32768,0);        // bank was -32768, but I think that was an erroneous compensation
 			rotmat = vm_matrix_x_matrix(rotmat, vm_angles_2_matrix(rotvec));
 			break;
 
-		case WFRONT:
+		case sidenum_t::WFRONT:
                         vm_angvec_make(&rotvec,0,0,-32768);
 			rotmat = vm_matrix_x_matrix(rotmat, vm_angles_2_matrix(rotvec));
 			break;
 
-		case WBACK:
+		case sidenum_t::WBACK:
 			break;
 	}
 }
@@ -486,83 +487,90 @@ static void compress_segments(void)
 	if (Highest_segment_index == LevelSharedSegmentState.Num_segments - 1)
 		return;
 
-	segnum_t		hole,seg;
-	seg = Highest_segment_index;
-
 	auto &RobotCenters = LevelSharedRobotcenterState.RobotCenters;
 	auto &Walls = LevelUniqueWallSubsystemState.Walls;
 	auto &vmwallptr = Walls.vmptr;
-	for (hole=0; hole < seg; hole++)
-		if (Segments[hole].segnum == segment_none) {
+	auto holep = Segments.vmptridx.begin();
+	auto segp = Segments.vmptridx.end();
+	for (; holep != segp; ++holep)
+	{
+		const vmsegptridx_t hole = *holep;
+		const msmusegment suhole = hole;
+		if (suhole.s.segnum != segment_none)
+			continue;
 			// found an unused segment which is a hole if a used segment follows (not necessarily immediately) it.
-			for ( ; (seg>hole) && (Segments[seg].segnum == segment_none); seg--)
-				;
-
-			if (seg > hole) {
+		for (; holep != --segp && segp.base()->segnum == segment_none;)
+		{
+		}
+		if (holep == segp)
+			break;
 				// Ok, hole is the index of a hole, seg is the index of a segment which follows it.
 				// Copy seg into hole, update pointers to it, update Cursegp, Markedsegp if necessary.
-				Segments[hole] = Segments[seg];
-				Segments[seg].segnum = segment_none;
-
-				if (Cursegp == &Segments[seg])
-					Cursegp = imsegptridx(hole);
-
-				if (Markedsegp == &Segments[seg])
-					Markedsegp = imsegptridx(hole);
-
+		const vmsegptridx_t seg = *segp;
+		const msmusegment suseg = seg;
+		suhole.s = std::move(suseg.s);
+		suhole.u = std::move(suseg.u);
+		/* As a debugging measure, reset the expired segment to default values.
+		 * Nothing should access this segment until it is reallocated and
+		 * reinitialized, so any values should be safe to write here.
+		 */
+		suseg.u = {};
+		suseg.s = {};
+		suseg.s.segnum = segment_none;
+		if (Cursegp == seg)
+			Cursegp = hole;
+		if (Markedsegp == seg)
+			Markedsegp = hole;
 				// Fix segments in groups
-				range_for (auto &g, partial_range(GroupList, num_groups))
-					g.segments.replace(seg, hole);
+		for (auto &g : partial_range(GroupList, num_groups))
+			g.segments.replace(seg, hole);
 
 				// Fix walls
-				range_for (const auto &&w, vmwallptr)
-					if (w->segnum == seg)
-						w->segnum = hole;
+		for (wall &w : vmwallptr)
+			if (auto &s = w.segnum; s == seg)
+				s = hole;
 
 				// Fix fuelcenters, robotcens, and triggers... added 2/1/95 -Yuan
-				range_for (auto &f, partial_range(LevelUniqueFuelcenterState.Station, LevelUniqueFuelcenterState.Num_fuelcenters))
-					if (f.segnum == seg)
-						f.segnum = hole;
+		for (auto &f : partial_range(LevelUniqueFuelcenterState.Station, LevelUniqueFuelcenterState.Num_fuelcenters))
+			if (auto &s = f.segnum; s == seg)
+				s = hole;
 
-				range_for (auto &f, partial_range(RobotCenters, LevelSharedRobotcenterState.Num_robot_centers))
-					if (f.segnum == seg)
-						f.segnum = hole;
+		for (auto &r : partial_range(RobotCenters, LevelSharedRobotcenterState.Num_robot_centers))
+			if (auto &s = r.segnum; s == seg)
+				s = hole;
 
-				auto &Triggers = LevelUniqueWallSubsystemState.Triggers;
-				auto &vmtrgptr = Triggers.vmptr;
-				range_for (const auto vt, vmtrgptr)
+		auto &Triggers = LevelUniqueWallSubsystemState.Triggers;
+		auto &vmtrgptr = Triggers.vmptr;
+		for (trigger &t : vmtrgptr)
+		{
+			for (auto &l : partial_range(t.seg, t.num_links))
+				if (l == seg)
+					l = hole;
+		}
+
+		for (auto &s : suhole.s.children)
+		{
+			if (IS_CHILD(s))
+			{
+				// Find out on what side the segment connection to the former seg is on in *csegp.
+				shared_segment &ss = vmsegptr(s);
+				for (auto &t : ss.children)
 				{
-					auto &t = *vt;
-					range_for (auto &l, partial_range(t.seg, t.num_links))
-						if (l == seg)
-							l = hole;
-				}
-
-				auto &sp = *vmsegptr(hole);
-				range_for (auto &s, sp.children)
-				{
-					if (IS_CHILD(s)) {
-						// Find out on what side the segment connection to the former seg is on in *csegp.
-						range_for (auto &t, vmsegptr(s)->children)
-						{
-							if (t == seg) {
-								t = hole;					// It used to be connected to seg, so make it connected to hole
-							}
-						}	// end for t
-					}	// end if
-				}	// end for s
+					if (t == seg) {
+						t = hole;					// It used to be connected to seg, so make it connected to hole
+						break;
+					}
+				}	// end for t
+			}	// end if
+		}	// end for s
 
 				//Update object segment pointers
-				range_for (const auto objp, objects_in(sp, vmobjptridx, vmsegptr))
-				{
-					Assert(objp->segnum == seg);
-					objp->segnum = hole;
-				}
-
-				seg--;
-
-			}	// end if (seg > hole)
-		}	// end if
+		for (object_base &objp : objects_in(suhole.u, vmobjptridx, vmsegptr))
+		{
+			assert(objp.segnum == seg);
+			objp.segnum = hole;
+		}
+	}
 
 	Segments.set_count(LevelSharedSegmentState.Num_segments);
 	med_create_new_segment_from_cursegp();
@@ -582,18 +590,16 @@ void med_combine_duplicate_vertices(enumerated_array<uint8_t, MAX_VERTICES, vert
 	auto &vcvertptridx = Vertices.vcptridx;
 	const auto &&range = make_range(vcvertptridx);
 	// Note: ok to do to <, rather than <= because w for loop starts at v+1
-	if (range.m_begin == range.m_end)
+	if (range.empty())
 		return;
-	for (auto i = range.m_begin;;)
+	for (auto i = range.begin();;)
 	{
 		const auto &&v = *i;
-		if (++i == range.m_end)
+		if (++i == range.end())
 			return;
 		if (vlp[v]) {
 			auto &vvp = *v;
-			auto subrange = range;
-			subrange.m_begin = i;
-			range_for (auto &&w, subrange)
+			for (auto &&w : ranges::subrange(i, range.end()))
 				if (vlp[w]) {	//	used to be Vertex_active[w]
 					if (vnear(vvp, *w)) {
 						change_vertex_occurrences(vmsegptr, v, w);
@@ -929,8 +935,9 @@ int med_delete_segment(const vmsegptridx_t sp)
 
 	// If we deleted something which was not connected to anything, must now select a new current segment.
 	if (Cursegp == sp)
-		for (segnum_t s=0; s<MAX_SEGMENTS; s++)
-			if ((Segments[s].segnum != segment_none) && (s!=segnum) ) {
+		for (auto &&[s, seg] : enumerate(Segments))
+			if (seg.segnum != segment_none && s != segnum)
+			{
 				Cursegp = imsegptridx(s);
 				med_create_new_segment_from_cursegp();
 		   	break;
@@ -1007,8 +1014,8 @@ int med_rotate_segment(const vmsegptridx_t seg, const vms_matrix &rotmat)
 
 	const auto &&destseg = seg.absolute_sibling(seg->children[*newside]);
 
-	if (Curside == WFRONT)
-		Curside = WBACK;
+	if (Curside == sidenum_t::WFRONT)
+		Curside = sidenum_t::WBACK;
 
 	// Before deleting the segment, copy its texture maps to New_segment
 	copy_tmaps_to_segment(vmsegptr(&New_segment), seg);
@@ -1021,12 +1028,9 @@ int med_rotate_segment(const vmsegptridx_t seg, const vms_matrix &rotmat)
 
 	//	Save tmap_num on each side to restore after call to med_propagate_tmaps_to_segments and _back_side
 	//	which will change the tmap nums.
-	std::array<texture1_value, MAX_SIDES_PER_SEGMENT> side_tmaps;
-	range_for (const auto &&z, zip(side_tmaps, seg->unique_segment::sides))
-	{
-		const unique_side &us = std::get<1>(z);
-		std::get<0>(z) = us.tmap_num;
-	}
+	per_side_array<texture1_value> side_tmaps;
+	for (auto &&[tm, us] : zip(side_tmaps, seg->unique_segment::sides))
+		tm = us.tmap_num;
 
 	auto back_side = Side_opposite[find_connect_side(destseg, seg)];
 
@@ -1279,7 +1283,7 @@ void med_create_segment(const vmsegptridx_t sp,fix cx, fix cy, fix cz, fix lengt
 	auto &Vertices = LevelSharedVertexState.get_vertices();
 	++ LevelSharedSegmentState.Num_segments;
 
-	sp->segnum = 1;						// What to put here?  I don't know.
+	sp->segnum = segnum_t{1};						// What to put here?  I don't know.
 
 	// Form connections to children, of which it has none.
 	for (auto &&[child, side] : zip(sp->children, sp->shared_segment::sides))
@@ -1345,7 +1349,7 @@ void med_create_new_segment(const vms_vector &scale)
 	width = scale.x;
 	height = scale.y;
 
-	sp->segnum = 1;						// What to put here?  I don't know.
+	sp->segnum = segnum_t{1};						// What to put here?  I don't know.
 
 	//	Create relative-to-center vertices, which are the points on the box defined by length, width, height
 	auto &verts = sp->verts;
@@ -1368,7 +1372,7 @@ void med_create_new_segment(const vms_vector &scale)
 		child = segment_none;
 		ss.wall_num = wall_none;
 		create_walls_on_side(vcvertptr, sp, static_cast<sidenum_t>(s));
-		us.tmap_num = build_texture1_value(s + 1);					// assign some stupid old tmap to this side.
+		us.tmap_num = build_texture1_value(1);					// assign some stupid old tmap to this side.
 		us.tmap_num2 = texture2_value::None;
 	}
 

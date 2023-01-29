@@ -111,7 +111,7 @@ void do_powerup_frame(const d_vclip_array &Vclip, const vmobjptridx_t obj)
 	}
 
 	if (obj->lifeleft <= 0) {
-		object_create_explosion(vmsegptridx(obj->segnum), obj->pos, F1_0*7/2, VCLIP_POWERUP_DISAPPEARANCE);
+		object_create_explosion_without_damage(Vclip, vmsegptridx(obj->segnum), obj->pos, F1_0 * 7 / 2, VCLIP_POWERUP_DISAPPEARANCE);
 
 		if ( Vclip[VCLIP_POWERUP_DISAPPEARANCE].sound_num > -1 )
 			digi_link_sound_to_object(Vclip[VCLIP_POWERUP_DISAPPEARANCE].sound_num, obj, 0, F1_0, sound_stack::allow_stacking);
@@ -121,7 +121,7 @@ void do_powerup_frame(const d_vclip_array &Vclip, const vmobjptridx_t obj)
 void draw_powerup(const d_vclip_array &Vclip, grs_canvas &canvas, const object_base &obj)
 {
 	auto &vci = obj.rtype.vclip_info;
-	draw_object_blob(canvas, obj, Vclip[vci.vclip_num].frames[vci.framenum]);
+	draw_object_blob(GameBitmaps, *Viewer, canvas, obj, Vclip[vci.vclip_num].frames[vci.framenum]);
 }
 
 namespace {
@@ -132,7 +132,6 @@ static void _powerup_basic_nonhud(int redadd, int greenadd, int blueadd, int sco
 	add_points_to_score(ConsoleObject->ctype.player_info, score, Game_mode);
 }
 
-#define powerup_basic(A1,A2,A3,A4,F,...)	dxx_call_printf_checked(powerup_basic,powerup_basic_str,(A1,A2,A3,A4),(F),##__VA_ARGS__)
 __attribute_format_printf(5, 6)
 void (powerup_basic)(int redadd, int greenadd, int blueadd, int score, const char *format, ...)
 {
@@ -146,9 +145,9 @@ void (powerup_basic)(int redadd, int greenadd, int blueadd, int score, const cha
 
 }
 
-void powerup_basic_str(int redadd, int greenadd, int blueadd, int score, const char *str)
+void powerup_basic_str(int redadd, int greenadd, int blueadd, int score, const std::span<const char> str)
 {
-	HUD_init_message_literal(HM_DEFAULT, str);
+	HUD_init_message_literal(HM_DEFAULT, str.data());
 	_powerup_basic_nonhud(redadd, greenadd, blueadd, score);
 }
 
@@ -156,7 +155,7 @@ void powerup_basic_str(int redadd, int greenadd, int blueadd, int score, const c
 //	Give the megawow powerup!
 void do_megawow_powerup(object &plrobj, const int quantity)
 {
-	powerup_basic(30, 0, 30, 1, "MEGA-WOWIE-ZOWIE!");
+	powerup_basic_str(30, 0, 30, 1, "MEGA-WOWIE-ZOWIE!");
 	auto &player_info = plrobj.ctype.player_info;
 #if defined(DXX_BUILD_DESCENT_I)
 	player_info.primary_weapon_flags = (HAS_LASER_FLAG | HAS_VULCAN_FLAG | HAS_SPREADFIRE_FLAG | HAS_PLASMA_FLAG | HAS_FUSION_FLAG);
@@ -199,9 +198,9 @@ static int pick_up_energy(player_info &player_info)
 	if (energy < MAX_ENERGY) {
 		fix boost;
 		const auto Difficulty_level = GameUniqueState.Difficulty_level;
-		boost = 3*F1_0 + 3*F1_0*(NDL - Difficulty_level);
+		boost = 3 * F1_0 + 3 * F1_0 * (NDL - underlying_value(Difficulty_level));
 #if defined(DXX_BUILD_DESCENT_II)
-		if (Difficulty_level == 0)
+		if (Difficulty_level == Difficulty_level_type::_0)
 			boost += boost/2;
 #endif
 		energy += boost;
@@ -256,8 +255,8 @@ static int pick_up_key(const int r, const int g, const int b, player_flags &play
 template <int r, int g, int b>
 struct player_hit_basic_silent_powerup
 {
-	const char *const desc_pickup;
-	player_hit_basic_silent_powerup(const char *const p) :
+	const std::span<const char> desc_pickup;
+	player_hit_basic_silent_powerup(const std::span<const char> p) :
 		desc_pickup(p)
 	{
 	}
@@ -324,7 +323,7 @@ struct player_hit_headlight_powerup
 };
 
 template <unsigned TEAM>
-static int player_hit_flag_powerup(player_info &player_info, const char *const desc)
+static int player_hit_flag_powerup(player_info &player_info, const std::span<const char> desc)
 {
 	if (!game_mode_capture_flag())
 		return 0;
@@ -381,9 +380,6 @@ int do_powerup(const vmobjptridx_t obj)
 	auto &vcobjptr = Objects.vcptr;
 	auto &vmobjptr = Objects.vmptr;
 	int used=0;
-#if defined(DXX_BUILD_DESCENT_I)
-	int vulcan_ammo_to_add_with_cannon;
-#endif
 	int special_used=0;		//for when hitting vulcan cannon gets vulcan ammo
 
 	if (Player_dead_state != player_dead_state::no ||
@@ -408,7 +404,7 @@ int do_powerup(const vmobjptridx_t obj)
 		{
 			if (i == Player_num)
 				continue;
-			if (plr.connected != CONNECT_PLAYING)
+			if (plr.connected != player_connection_status::playing)
 				continue;
 			auto &o = *vcobjptr(plr.objnum);
 			if (o.type == OBJ_GHOST)
@@ -425,7 +421,10 @@ int do_powerup(const vmobjptridx_t obj)
 	{
 		case POW_EXTRA_LIFE:
 			get_local_player().lives++;
-			powerup_basic_str(15, 15, 15, 0, TXT_EXTRA_LIFE);
+			{
+				const auto &&m = TXT_EXTRA_LIFE;
+				powerup_basic_str(15, 15, 15, 0, {m, strlen(m)});
+			}
 			used=1;
 			break;
 		case POW_ENERGY:
@@ -436,9 +435,9 @@ int do_powerup(const vmobjptridx_t obj)
 				auto &shields = plrobj.shields;
 			if (shields < MAX_SHIELDS) {
 				const auto Difficulty_level = GameUniqueState.Difficulty_level;
-				fix boost = 3*F1_0 + 3*F1_0*(NDL - Difficulty_level);
+				fix boost = 3 * F1_0 + 3 * F1_0 * (NDL - underlying_value(Difficulty_level));
 #if defined(DXX_BUILD_DESCENT_II)
-				if (Difficulty_level == 0)
+				if (Difficulty_level == Difficulty_level_type::_0)
 					boost += boost/2;
 #endif
 				shields += boost;
@@ -490,66 +489,35 @@ int do_powerup(const vmobjptridx_t obj)
 			break;
 
 		case	POW_VULCAN_WEAPON:
-#if defined(DXX_BUILD_DESCENT_I)
-			if ((used = pick_up_primary(player_info, primary_weapon_index_t::VULCAN_INDEX)) != 0) {
-				vulcan_ammo_to_add_with_cannon = obj->ctype.powerup_info.count;
-				if (vulcan_ammo_to_add_with_cannon < VULCAN_WEAPON_AMMO_AMOUNT) vulcan_ammo_to_add_with_cannon = VULCAN_WEAPON_AMMO_AMOUNT;
-				pick_up_vulcan_ammo(player_info, vulcan_ammo_to_add_with_cannon);
-			}
-
-//added/edited 8/3/98 by Victor Rachels to fix vulcan multi bug
-//check if multi, if so, pick up ammo w/o using, set ammo left. else, normal
-
-//killed 8/27/98 by Victor Rachels to fix vulcan ammo multiplying.  new way
-// is by spewing the current held ammo when dead.
-//-killed                        if (!used && (Game_mode & GM_MULTI))
-//-killed                        {
-//-killed                         int tempcount;                          
-//-killed                           tempcount=Players[Player_num].primary_ammo[VULCAN_INDEX];
-//-killed                            if (pick_up_ammo(CLASS_PRIMARY, VULCAN_INDEX, obj->ctype.powerup_info.count))
-//-killed                             obj->ctype.powerup_info.count -= Players[Player_num].primary_ammo[VULCAN_INDEX]-tempcount;
-//-killed                        }
-//end kill - Victor Rachels
-
-			if (!used && !(Game_mode & GM_MULTI) )
-//end addition/edit - Victor Rachels
-				used = pick_up_vulcan_ammo(player_info);
-			break;
-#elif defined(DXX_BUILD_DESCENT_II)
-		case	POW_GAUSS_WEAPON: {
-			int ammo = obj->ctype.powerup_info.count;
-
-			used = pick_up_primary(player_info, (get_powerup_id(obj) == POW_VULCAN_WEAPON)
-				? primary_weapon_index_t::VULCAN_INDEX
-				: primary_weapon_index_t::GAUSS_INDEX
+#if defined(DXX_BUILD_DESCENT_II)
+		case	POW_GAUSS_WEAPON:
+#endif
+			{
+			used = pick_up_primary(player_info,
+#if defined(DXX_BUILD_DESCENT_II)
+									(id == POW_GAUSS_WEAPON)
+				? primary_weapon_index_t::GAUSS_INDEX
+				:
+#endif
+				primary_weapon_index_t::VULCAN_INDEX
 			);
-
-			//didn't get the weapon (because we already have it), but
-			//maybe snag some of the ammo.  if single-player, grab all the ammo
-			//and remove the powerup.  If multi-player take ammo in excess of
-			//the amount in a powerup, and leave the rest.
-			if (! used)
-				if ((Game_mode & GM_MULTI) )
-					ammo -= VULCAN_AMMO_AMOUNT;	//don't let take all ammo
-
-			if (ammo > 0) {
-				int ammo_used;
-				ammo_used = pick_up_vulcan_ammo(player_info, ammo);
+			if (const auto ammo_used = pick_up_vulcan_ammo(player_info, obj->ctype.powerup_info.count))
+			{
+				/* Even if the cannon is made empty, leave `used` set to
+				 * false, so that the cannon can remain in the mine.
+				 */
 				obj->ctype.powerup_info.count -= ammo_used;
-				if (!used && ammo_used) {
+				if (!used)
+				{
 					powerup_basic(7, 14, 21, VULCAN_AMMO_SCORE, "%s!", TXT_VULCAN_AMMO);
 					special_used = 1;
 					id = POW_VULCAN_AMMO;		//set new id for making sound at end of this function
-					if (obj->ctype.powerup_info.count == 0)
-						used = 1;		//say used if all ammo taken
                                         if (Game_mode & GM_MULTI)
                                                 multi_send_vulcan_weapon_ammo_adjust(obj); // let other players know how much ammo we took.
 				}
 			}
-
 			break;
 		}
-#endif
 
 		case	POW_SPREADFIRE_WEAPON:
 			used = pick_up_primary_or_energy(player_info, primary_weapon_index_t::SPREADFIRE_INDEX);
@@ -616,10 +584,6 @@ int do_powerup(const vmobjptridx_t obj)
 #endif
 		case	POW_VULCAN_AMMO:
 			used = pick_up_vulcan_ammo(player_info);
-#if defined(DXX_BUILD_DESCENT_I)
-			if (!used && !(Game_mode & GM_MULTI) )
-				used = pick_up_vulcan_ammo(player_info);
-#endif
 			break;
 		case	POW_HOMING_AMMO_1:
 			used = pick_up_secondary(player_info, HOMING_INDEX, 1, Controls);
@@ -719,7 +683,7 @@ int do_powerup(const vmobjptridx_t obj)
 				if (proximity < player_info.max_hoard_orbs)
 				{
 					++ proximity;
-					powerup_basic(15, 0, 15, 0, "Orb!!!");
+					powerup_basic_str(15, 0, 15, 0, "Orb!!!");
 					player_info.powerup_flags |= PLAYER_FLAGS_FLAG;
 					used=1;
 					multi_send_got_orb (Player_num);
@@ -742,8 +706,10 @@ int do_powerup(const vmobjptridx_t obj)
 //is solved.  Note also the break statements above that are commented out
 //!!	used=1;
 
-	if ((used || special_used) && Powerup_info[id].hit_sound  > -1 ) {
-		multi_digi_play_sample(Powerup_info[id].hit_sound, F1_0);
+	if (used || special_used)
+	{
+		if (const auto hit_sound = Powerup_info[id].hit_sound; hit_sound > -1)
+			multi_digi_play_sample(hit_sound, F1_0);
 		detect_escort_goal_accomplished(obj);
 	}
 

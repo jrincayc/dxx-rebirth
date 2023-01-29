@@ -40,6 +40,7 @@ COPYRIGHT 1993-1998 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include "dxxsconf.h"
 #include "dsx-ns.h"
 #include "compiler-range_for.h"
+#include "partial_range.h"
 #include <array>
 
 namespace dcx {
@@ -145,18 +146,6 @@ int gr_palette_get_gamma()
 }
 
 namespace dsx {
-
-#if defined(DXX_BUILD_DESCENT_I)
-void copy_diminish_palette(palette_array_t &palette, const uint8_t *p)
-{
-	range_for (auto &i, palette)
-	{
-		i.r = *p++ >> 2;
-		i.g = *p++ >> 2;
-		i.b = *p++ >> 2;
-	}
-}
-#endif
 
 #if defined(DXX_BUILD_DESCENT_II)
 void gr_copy_palette(palette_array_t &gr_palette, const palette_array_t &pal)

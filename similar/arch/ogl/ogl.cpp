@@ -370,28 +370,32 @@ static void ogl_texwrap(ogl_texture *const gltexture, const int state)
 //similarly, with the objects(esp weapons), we could just go through and cache em all instead, but that would get ones that might not even be on the level
 //TODO: doors
 
-void ogl_cache_polymodel_textures(const unsigned model_num)
+namespace dsx {
+
+void ogl_cache_polymodel_textures(const polygon_model_index model_num)
 {
 	auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
-	if (model_num >= Polygon_models.size())
+	if (model_num == polygon_model_index::None)
 		return;
 	const auto &po = Polygon_models[model_num];
 	unsigned i = po.first_texture;
 	const unsigned last_texture = i + po.n_textures;
 	for (; i != last_texture; ++i)
 	{
-		auto &objbitmap = ObjBitmaps[ObjBitmapPtrs[i]];
+		const auto objbitmap = ObjBitmaps[ObjBitmapPtrs[i]];
 		PIGGY_PAGE_IN(objbitmap);
-		ogl_loadbmtexture(GameBitmaps[objbitmap.index], 1);
+		ogl_loadbmtexture(GameBitmaps[objbitmap], 1);
 	}
+}
+
 }
 
 static void ogl_cache_vclip_textures(const vclip &vc)
 {
-	range_for (auto &i, partial_const_range(vc.frames, vc.num_frames))
+	for (const auto i : partial_const_range(vc.frames, vc.num_frames))
 	{
 		PIGGY_PAGE_IN(i);
-		ogl_loadbmtexture(GameBitmaps[i.index], 0);
+		ogl_loadbmtexture(GameBitmaps[i], 0);
 	}
 }
 
@@ -459,14 +463,14 @@ void ogl_cache_level_textures(void)
 					//				tmap1=0;
 					continue;
 				}
-				auto &texture1 = Textures[tmap1idx];
+				const auto texture1 = Textures[tmap1idx];
 				PIGGY_PAGE_IN(texture1);
-				grs_bitmap *bm = &GameBitmaps[texture1.index];
+				grs_bitmap *bm = &GameBitmaps[texture1];
 				if (tmap2 != texture2_value::None)
 				{
 					const auto texture2 = Textures[get_texture_index(tmap2)];
 					PIGGY_PAGE_IN(texture2);
-					auto &bm2 = GameBitmaps[texture2.index];
+					auto &bm2 = GameBitmaps[texture2];
 					if (CGameArg.DbgUseOldTextureMerge || bm2.get_flag_mask(BM_FLAG_SUPER_TRANSPARENT))
 						bm = &texmerge_get_cached_bitmap( tmap1, tmap2 );
 					else {
@@ -533,9 +537,9 @@ void ogl_cache_level_textures(void)
 				}
 				if (objp->rtype.pobj_info.tmap_override != -1)
 				{
-					auto &t = Textures[objp->rtype.pobj_info.tmap_override];
+					const auto t = Textures[objp->rtype.pobj_info.tmap_override];
 					PIGGY_PAGE_IN(t);
-					ogl_loadbmtexture(GameBitmaps[t.index], 1);
+					ogl_loadbmtexture(GameBitmaps[t], 1);
 				}
 				else
 					ogl_cache_polymodel_textures(objp->rtype.pobj_info.model_num);
@@ -550,27 +554,17 @@ void ogl_cache_level_textures(void)
 
 namespace dcx {
 
-void g3_draw_line(grs_canvas &canvas, const g3s_point &p0, const g3s_point &p1, const uint8_t c)
+void g3_draw_line(const g3_draw_line_context &context, const g3s_point &p0, const g3s_point &p1)
 {
-	GLfloat color_r, color_g, color_b;
-	GLfloat color_array[] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
-  
 	ogl_client_states<int, GL_VERTEX_ARRAY, GL_COLOR_ARRAY> cs;
 	OGL_DISABLE(TEXTURE_2D);
 	glDisable(GL_CULL_FACE);
-	color_r = PAL2Tr(c);
-	color_g = PAL2Tg(c);
-	color_b = PAL2Tb(c);
-	color_array[0] = color_array[4] = color_r;
-	color_array[1] = color_array[5] = color_g;
-	color_array[2] = color_array[6] = color_b;
-	color_array[3] = color_array[7] = 1.0;
 	std::array<GLfloat, 6> vertices = {{
 		f2glf(p0.p3_vec.x), f2glf(p0.p3_vec.y), -f2glf(p0.p3_vec.z),
 		f2glf(p1.p3_vec.x), f2glf(p1.p3_vec.y), -f2glf(p1.p3_vec.z)
 	}};
 	glVertexPointer(3, GL_FLOAT, 0, vertices.data());
-	glColorPointer(4, GL_FLOAT, 0, color_array);
+	glColorPointer(4, GL_FLOAT, 0, context.color_array.data());
 	glDrawArrays(GL_LINES, 0, 2);
 }
 
@@ -861,9 +855,9 @@ int gr_disk(grs_canvas &canvas, const fix x, const fix y, const fix r, const uin
 /*
  * Draw flat-shaded Polygon (Lasers, Drone-arms, Driller-ears)
  */
-void _g3_draw_poly(grs_canvas &canvas, const uint_fast32_t nv, cg3s_point *const *const pointlist, const uint8_t palette_color_index)
+void _g3_draw_poly(grs_canvas &canvas, const std::span<cg3s_point *const> pointlist, const uint8_t palette_color_index)
 {
-	if (nv > MAX_POINTS_PER_POLY)
+	if (pointlist.size() > MAX_POINTS_PER_POLY)
 		return;
 	flatten_array<GLfloat, 4, MAX_POINTS_PER_POLY> color_array;
 	flatten_array<GLfloat, 3, MAX_POINTS_PER_POLY> vertices;
@@ -878,9 +872,9 @@ void _g3_draw_poly(grs_canvas &canvas, const uint_fast32_t nv, cg3s_point *const
 		: 1.0 - static_cast<float>(canvas.cv_fade_level) / (static_cast<float>(GR_FADE_LEVELS) - 1.0);
 
 	for (auto &&[p, v, c] : zip(
-			unchecked_partial_range(pointlist, nv),
-			unchecked_partial_range(vertices.nested, nv),
-			unchecked_partial_range(color_array.nested, nv)
+			pointlist,
+			unchecked_partial_range(vertices.nested, pointlist.size()),
+			unchecked_partial_range(color_array.nested, pointlist.size())
 		)
 	)
 	{
@@ -896,13 +890,13 @@ void _g3_draw_poly(grs_canvas &canvas, const uint_fast32_t nv, cg3s_point *const
 
 	glVertexPointer(3, GL_FLOAT, 0, vertices.flat.data());
 	glColorPointer(4, GL_FLOAT, 0, color_array.flat.data());
-	glDrawArrays(GL_TRIANGLE_FAN, 0, nv);
+	glDrawArrays(GL_TRIANGLE_FAN, 0, pointlist.size());
 }
 
 /*
  * Everything texturemapped (walls, robots, ship)
  */ 
-void _g3_draw_tmap(grs_canvas &canvas, const unsigned nv, cg3s_point *const *const pointlist, const g3s_uvl *const uvl_list, const g3s_lrgb *const light_rgb, grs_bitmap &bm)
+void _g3_draw_tmap(grs_canvas &canvas, const std::span<cg3s_point *const> pointlist, const g3s_uvl *const uvl_list, const g3s_lrgb *const light_rgb, grs_bitmap &bm)
 {
 	GLfloat color_alpha = 1.0;
 
@@ -927,8 +921,9 @@ void _g3_draw_tmap(grs_canvas &canvas, const unsigned nv, cg3s_point *const *con
 	flatten_array<GLfloat, 4, MAX_POINTS_PER_POLY> color_array;
 	flatten_array<GLfloat, 2, MAX_POINTS_PER_POLY> texcoord_array;
 
+	const auto nv = pointlist.size();
 	for (auto &&[point, light, uvl, vert, color, texcoord] : zip(
-			unchecked_partial_range(pointlist, nv),
+			pointlist,
 			unchecked_partial_range(light_rgb, nv),
 			unchecked_partial_range(uvl_list, nv),
 			unchecked_partial_range(vertices.nested, nv),
@@ -979,9 +974,9 @@ void _g3_draw_tmap(grs_canvas &canvas, const unsigned nv, cg3s_point *const *con
 /*
  * Everything texturemapped with secondary texture (walls with secondary texture)
  */
-void _g3_draw_tmap_2(grs_canvas &canvas, const unsigned nv, const g3s_point *const *const pointlist, const g3s_uvl *uvl_list, const g3s_lrgb *light_rgb, grs_bitmap &bmbot, grs_bitmap &bm, const texture2_rotation_low orient)
+void _g3_draw_tmap_2(grs_canvas &canvas, const std::span<const g3s_point *const> pointlist, const std::span<const g3s_uvl, 4> uvl_list, const std::span<const g3s_lrgb, 4> light_rgb, grs_bitmap &bmbot, grs_bitmap &bm, const texture2_rotation_low orient)
 {
-	_g3_draw_tmap(canvas, nv, pointlist, uvl_list, light_rgb, bmbot);//draw the bottom texture first.. could be optimized with multitexturing..
+	_g3_draw_tmap(canvas, pointlist, uvl_list.data(), light_rgb.data(), bmbot);//draw the bottom texture first.. could be optimized with multitexturing..
 	ogl_client_states<int, GL_VERTEX_ARRAY, GL_COLOR_ARRAY, GL_TEXTURE_COORD_ARRAY> cs;
 	(void)cs;
 	r_tpolyc++;
@@ -994,7 +989,7 @@ void _g3_draw_tmap_2(grs_canvas &canvas, const unsigned nv, const g3s_point *con
 		const GLfloat alpha = (canvas.cv_fade_level >= GR_FADE_OFF)
 			? 1.0
 			: (1.0 - static_cast<float>(canvas.cv_fade_level) / (static_cast<float>(GR_FADE_LEVELS) - 1.0));
-		auto &&color_range = unchecked_partial_range(color_array.nested, nv);
+		auto &&color_range = unchecked_partial_range(color_array.nested, pointlist.size());
 		if (bm.get_flag_mask(BM_FLAG_NO_LIGHTING))
 		{
 			for (auto &e : color_range)
@@ -1007,7 +1002,7 @@ void _g3_draw_tmap_2(grs_canvas &canvas, const unsigned nv, const g3s_point *con
 		{
 			for (auto &&[e, l] : zip(
 					color_range,
-					unchecked_partial_range(light_rgb, nv)
+					unchecked_partial_range(light_rgb, pointlist.size())
 				)
 			)
 			{
@@ -1022,8 +1017,9 @@ void _g3_draw_tmap_2(grs_canvas &canvas, const unsigned nv, const g3s_point *con
 	flatten_array<GLfloat, 3, MAX_POINTS_PER_POLY> vertices;
 	flatten_array<GLfloat, 2, MAX_POINTS_PER_POLY> texcoord_array;
 
+	const auto nv = pointlist.size();
 	for (auto &&[point, uvl, vert, texcoord] : zip(
-			unchecked_partial_range(pointlist, nv),
+			pointlist,
 			unchecked_partial_range(uvl_list, nv),
 			unchecked_partial_range(vertices.nested, nv),
 			partial_range(texcoord_array.nested, nv)
@@ -1149,9 +1145,6 @@ void g3_draw_bitmap(grs_canvas &canvas, const vms_vector &pos, const fix iwidth,
 bool ogl_ubitblt_i(unsigned dw,unsigned dh,unsigned dx,unsigned dy, unsigned sw, unsigned sh, unsigned sx, unsigned sy, const grs_bitmap &src, grs_bitmap &dest, const opengl_texture_filter texfilt)
 {
 	GLfloat xo,yo,xs,ys,u1,v1;
-	GLfloat color_array[] = { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-	GLfloat texcoord_array[] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
-	GLfloat vertices[] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
 	struct bitblt_free_ogl_texture
 	{
 		ogl_texture t;
@@ -1184,25 +1177,35 @@ bool ogl_ubitblt_i(unsigned dw,unsigned dh,unsigned dx,unsigned dy, unsigned sw,
 	
 	ogl_texwrap(&tex,GL_CLAMP_TO_EDGE);
 
-	vertices[0] = xo;
-	vertices[1] = yo;
-	vertices[2] = xo+xs;
-	vertices[3] = yo;
-	vertices[4] = xo+xs;
-	vertices[5] = yo-ys;
-	vertices[6] = xo;
-	vertices[7] = yo-ys;
+	const GLfloat vertices[] = {
+		xo,
+		yo,
+		xo + xs,
+		yo,
+		xo + xs,
+		yo - ys,
+		xo,
+		yo - ys
+	};
 
-	texcoord_array[0] = u1;
-	texcoord_array[1] = v1;
-	texcoord_array[2] = tex.u;
-	texcoord_array[3] = v1;
-	texcoord_array[4] = tex.u;
-	texcoord_array[5] = tex.v;
-	texcoord_array[6] = u1;
-	texcoord_array[7] = tex.v;
+	const GLfloat texcoord_array[] = {
+		u1,
+		v1,
+		tex.u,
+		v1,
+		tex.u,
+		tex.v,
+		u1,
+		tex.v
+	};
 
 	glVertexPointer(2, GL_FLOAT, 0, vertices);
+	static constexpr GLfloat color_array[] = {
+		1.0, 1.0, 1.0, 1.0,
+		1.0, 1.0, 1.0, 1.0,
+		1.0, 1.0, 1.0, 1.0,
+		1.0, 1.0, 1.0, 1.0
+	};
 	glColorPointer(4, GL_FLOAT, 0, color_array);
 	glTexCoordPointer(2, GL_FLOAT, 0, texcoord_array);  
 	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);//replaced GL_QUADS
@@ -1281,6 +1284,7 @@ void ogl_start_frame(grs_canvas &canvas)
 	glLoadIdentity();//clear matrix
 }
 
+#if DXX_USE_STEREOSCOPIC_RENDER
 void ogl_stereo_frame(const bool left_eye, const int xoff)
 {
 	const float dxoff = xoff * 2.0f / grd_curscreen->sc_canvas.cv_bitmap.bm_w;
@@ -1366,6 +1370,7 @@ void ogl_stereo_frame(const bool left_eye, const int xoff)
 	glLoadMatrixf(ogl_stereo_transform.data());
 	glMatrixMode(GL_MODELVIEW);
 }
+#endif
 
 void ogl_end_frame(void){
 	OGL_VIEWPORT(0, 0, grd_curscreen->get_screen_width(), grd_curscreen->get_screen_height());

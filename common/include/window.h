@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "dxxsconf.h"
 #include "gr.h"
 #include "console.h"
 
@@ -23,6 +24,7 @@
 
 #include "fwd-window.h"
 #include "event.h"
+#include <memory>
 
 namespace dcx {
 
@@ -35,7 +37,6 @@ private:
 	class window *next = nullptr;				// the next window in the doubly linked list
 	uint8_t w_visible = 1;						// whether it's visible
 	uint8_t w_modal = 1;						// modal = accept all user input exclusively
-	bool *w_exists = nullptr;					// optional pointer to a tracking variable
 public:
 	explicit window(grs_canvas &src, int x, int y, int w, int h);
 	window(const window &) = delete;
@@ -69,16 +70,11 @@ public:
 		return w_modal;
 	}
 
-	friend window_event_result window_send_event(window &wind, const d_event &event)
-	{
-		auto r = wind.event_handler(event);
-		if (r == window_event_result::close)
-			if (window_close(&wind))
-				return window_event_result::deleted;
-
-		return r;
-	}
-
+	window_event_result send_event(const d_event &event
+#if DXX_HAVE_CXX_BUILTIN_FILE_LINE
+								, const char *file = __builtin_FILE(), unsigned line = __builtin_LINE()
+#endif
+								);
 	friend window *window_get_next(window &wind)
 	{
 		return wind.next;
@@ -88,20 +84,19 @@ public:
 	{
 		return wind.prev;
 	}
-
-	void track(bool *exists)
-	{
-		assert(w_exists == nullptr);
-		w_exists = exists;
-	}
 };
 
-static inline window_event_result (WINDOW_SEND_EVENT)(window &w, const d_event &event, const char *const file, const unsigned line)
+struct mixin_trackable_window
 {
-	auto &c = w.w_canv;
-	con_printf(CON_DEBUG, "%s:%u: sending event %i to window of dimensions %dx%d", file, line, event.type, c.cv_bitmap.bm_w, c.cv_bitmap.bm_h);
-	return window_send_event(w, event);
-}
+	std::shared_ptr<bool> exists;
+	std::shared_ptr<bool> track()
+	{
+		if (!exists)
+			exists = std::make_unique<bool>(true);
+		return exists;
+	}
+	~mixin_trackable_window();
+};
 
 void menu_destroy_hook(window *w);
 

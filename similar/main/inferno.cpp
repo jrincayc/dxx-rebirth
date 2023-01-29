@@ -124,6 +124,8 @@ uint8_t HiresGFXAvailable;
 int MacHog = 0;	// using a Mac hogfile?
 #endif
 
+namespace {
+
 //read help from a file & print to screen
 static void print_commandline_help()
 {
@@ -218,7 +220,7 @@ static void print_commandline_help()
 		VERB("                                    5: Auto: if VSync is enabled and ARB_sync is supported, use mode 2, otherwise mode 0\n")	\
 		VERB("  -gl_syncwait <n>              Wait interval (ms) for sync mode 2 (default: " DXX_STRINGIZE(OGL_SYNC_WAIT_DEFAULT) ")\n")	\
 		VERB("  -gl_darkedges                 Re-enable dark edges around filtered textures (as present in earlier versions of the engine)\n")	\
-		DXX_if_not_defined_to_1(RELEASE, (	\
+		DXX_if_defined_01(DXX_USE_STEREOSCOPIC_RENDER, (	\
 		VERB("  -gl_stereo                    Enable OpenGL stereo quad buffering, if available\n")	\
 		VERB("  -gl_stereoview <n>            Select OpenGL stereo viewport mode (experimental; incomplete)\n")	\
 		VERB("                                    1: above/below half-height format\n")	\
@@ -281,7 +283,7 @@ static void print_commandline_help()
 	printf(DXX_COMMAND_LINE_HELP(DXX_COMMAND_LINE_HELP_FMT) DXX_COMMAND_LINE_HELP(DXX_COMMAND_LINE_HELP_ARG));
 }
 
-int Quitting = 0;
+}
 
 }
 
@@ -291,35 +293,6 @@ namespace dcx {
 window_event_result standard_handler(const d_event &event)
 {
 	int key;
-
-	if (Quitting)
-	{
-		window *wind = window_get_front();
-		if (!wind)
-			return window_event_result::ignored;	// finished quitting
-	
-		if (wind == Game_wind)
-		{
-			Quitting = 0;
-			const auto choice = nm_messagebox_str(menu_title{nullptr}, nm_messagebox_tie(TXT_YES, TXT_NO), menu_subtitle{TXT_ABORT_GAME});
-			if (choice != 0)
-				return window_event_result::handled;	// aborted quitting
-			else
-			{
-				CGameArg.SysAutoDemo = false;
-				Quitting = 1;
-			}
-		}
-		
-		// Close front window, let the code flow continue until all windows closed or quit cancelled
-		if (!window_close(wind))
-		{
-			Quitting = 0;
-			return window_event_result::handled;
-		}
-		
-		return window_event_result::deleted;	// tell the event system we deleted some window
-	}
 
 	switch (event.type)
 	{
@@ -381,12 +354,6 @@ window_event_result standard_handler(const d_event &event)
 #endif
 					return window_event_result::handled;
 
-#if defined(__APPLE__) || defined(macintosh)
-				case KEY_COMMAND+KEY_Q:
-					// Alt-F4 already taken, too bad
-					Quitting = 1;
-					return window_event_result::handled;
-#endif
 				case KEY_SHIFTED + KEY_ESC:
 					con_showup(Controls);
 					return window_event_result::handled;
@@ -403,11 +370,28 @@ window_event_result standard_handler(const d_event &event)
 
 		case EVENT_QUIT:
 #if DXX_USE_EDITOR
-			if (SafetyCheck())
+			if (!SafetyCheck())
+				return window_event_result::handled;
 #endif
-				Quitting = 1;
-			return window_event_result::handled;
+			for (;;)
+			{
+				const auto wind = window_get_front();
+				if (!wind)
+					return window_event_result::handled;	// finished quitting
 
+				if (wind == Game_wind)
+				{
+					const auto choice = nm_messagebox_str(menu_title{nullptr}, nm_messagebox_tie(TXT_YES, TXT_NO), menu_subtitle{TXT_ABORT_GAME});
+					if (choice != 0)
+						return window_event_result::handled;	// aborted quitting
+					else
+						CGameArg.SysAutoDemo = false;
+				}
+
+				// Close front window, let the code flow continue until all windows closed or quit cancelled
+				if (!window_close(wind))
+					return window_event_result::handled;
+			}
 		default:
 			break;
 	}
@@ -452,6 +436,8 @@ namespace dsx {
 //	DESCENT II by Parallax Software
 //	(varies based on preprocessor options)
 //		Descent Main
+
+namespace {
 
 static int main(int argc, char *argv[])
 {
@@ -664,7 +650,7 @@ static int main(int argc, char *argv[])
 #endif
 
 	con_puts(CON_DEBUG, "Doing gamedata_init...");
-	gamedata_init();
+	gamedata_init(LevelSharedRobotInfoState);
 
 #if defined(DXX_BUILD_DESCENT_II)
 #if DXX_USE_EDITOR
@@ -720,7 +706,7 @@ static int main(int argc, char *argv[])
 			}
 			if(PHYSFSX_exists(filename,0))
 			{
-				InterfaceUniqueState.PilotName.copy(b, std::distance(b, &filename[j - 4]));
+				InterfaceUniqueState.PilotName.copy(std::span<const char>(b, std::distance(b, &filename[j - 4])));
 				InterfaceUniqueState.update_window_title();
 				read_player_file();
 				WriteConfigFile();
@@ -767,6 +753,8 @@ static int main(int argc, char *argv[])
 	PHYSFSX_removeArchiveContent();
 
 	return(0);		//presumably successful exit
+}
+
 }
 
 }

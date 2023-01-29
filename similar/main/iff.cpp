@@ -89,10 +89,10 @@ ubyte iff_has_transparency;	// 0=no transparency, 1=iff_transparent_color is val
 #define anim_sig MAKE_SIG('A','N','I','M')
 #define dlta_sig MAKE_SIG('D','L','T','A')
 
+namespace {
 static int32_t get_sig(PHYSFS_File *f)
 {
 	int s;
-
 	PHYSFS_readSBE32(f, &s);
 	return s;
 }
@@ -137,10 +137,11 @@ static int parse_bmhd(PHYSFS_File *ifile,long len,iff_bitmap_header *bmheader)
 
 	return IFF_NO_ERROR;
 }
-
+}
 
 //  the buffer pointed to by raw_data is stuffed with a pointer to decompressed pixel data
 namespace dsx {
+namespace {
 static int parse_body(PHYSFS_File *ifile,long len,iff_bitmap_header *bmheader)
 {
 	auto p = bmheader->raw_data.get();
@@ -261,7 +262,9 @@ static int parse_body(PHYSFS_File *ifile,long len,iff_bitmap_header *bmheader)
 	return IFF_NO_ERROR;
 }
 }
+}
 
+namespace {
 //modify passed bitmap
 static int parse_delta(PHYSFS_File *ifile,long len,iff_bitmap_header *bmheader)
 {
@@ -485,10 +488,12 @@ static int convert_ilbm_to_pbm(iff_bitmap_header *bmheader)
 
 	return IFF_NO_ERROR;
 }
+}
 
 #define INDEX_TO_15BPP(i) (static_cast<short>((((palptr[(i)].r/2)&31)<<10)+(((palptr[(i)].g/2)&31)<<5)+((palptr[(i)].b/2 )&31)))
 
 namespace dsx {
+namespace {
 static int convert_rgb15(grs_bitmap &bm,iff_bitmap_header &bmheader)
 {
 	palette_array_t::iterator palptr = begin(bmheader.palette);
@@ -521,7 +526,9 @@ static int convert_rgb15(grs_bitmap &bm,iff_bitmap_header &bmheader)
 
 }
 }
+}
 
+namespace {
 //copy an iff header structure to a grs_bitmap structure
 static void copy_iff_to_grs(grs_bitmap &bm,iff_bitmap_header &bmheader)
 {
@@ -593,7 +600,7 @@ static int iff_parse_bitmap(PHYSFS_File *ifile, grs_bitmap &bm, const bm_mode bi
 	}
 
 	return ret;
-
+}
 }
 
 //returns error codes - see IFF.H.  see GR.H for bitmap_type
@@ -753,7 +760,7 @@ static int write_body(PHYSFS_File *ofile,iff_bitmap_header *bitmap_header,int co
 	}
 
 	if (compression_on) {		//write actual data length
-		Assert(PHYSFSX_fseek(ofile,save_pos,SEEK_SET)==0);
+		assert(PHYSFS_seek(ofile, save_pos) != 0);
 		(void)save_pos;
 		PHYSFS_writeSBE32(ofile, total_len);
 		Assert(PHYSFSX_fseek(ofile,total_len,SEEK_CUR)==0);
@@ -807,7 +814,7 @@ int write_tiny(PHYSFS_File *ofile,iff_bitmap_header *bitmap_header,int compressi
 	}
 
 	if (compression_on) {
-		Assert(PHYSFSX_fseek(ofile,save_pos,SEEK_SET)==0);
+		assert(PHYSFS_seek(ofile, save_pos) != 0);
 		(void)save_pos;
 		PHYSFS_writeSBE32(ofile, 4+total_len);
 		Assert(PHYSFSX_fseek(ofile,4+total_len,SEEK_CUR)==0);
@@ -846,7 +853,7 @@ static int write_pbm(PHYSFS_File *ofile,iff_bitmap_header *bitmap_header,int com
 
 	pbm_size = 4 + BMHD_SIZE + body_size + tiny_size + sizeof(rgb_t)*(1<<bitmap_header->nplanes)+8;
 
-	Assert(PHYSFSX_fseek(ofile,save_pos,SEEK_SET)==0);
+	assert(PHYSFS_seek(ofile, save_pos) != 0);
 	(void)save_pos;
 	PHYSFS_writeSBE32(ofile, pbm_size+8);
 	Assert(PHYSFSX_fseek(ofile,pbm_size+8,SEEK_CUR)==0);

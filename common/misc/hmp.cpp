@@ -26,8 +26,9 @@
 #include "dsx-ns.h"
 #include "compiler-range_for.h"
 #include "d_range.h"
+#include "d_underlying_value.h"
+#include "d_zip.h"
 #include "partial_range.h"
-#include <memory>
 
 namespace dcx {
 
@@ -35,9 +36,11 @@ namespace dcx {
 #define MIDISHORT(x)	(words_bigendian ? (x) : (SWAPSHORT(x)))
 
 #ifdef _WIN32
+namespace {
 static int midi_volume;
 static int channel_volume[16];
 static void hmp_stop(hmp_file *hmp);
+}
 #endif
 
 // READ/OPEN/CLOSE HMP
@@ -49,75 +52,73 @@ hmp_file::~hmp_file()
 #endif
 }
 
-std::unique_ptr<hmp_file> hmp_open(const char *filename) {
-	int data, tempo;
-	auto fp = PHYSFSX_openReadBuffered(filename).first;
+hmp_open_result hmp_open(const char *const filename)
+{
+	int tempo;
+	const auto fpe = PHYSFSX_openReadBuffered(filename);
 
-	if (!fp)
-		return NULL;
+	if (!fpe.first)
+		return {nullptr, hmp_open_error::physfs_open, fpe.second};
+	auto &fp = fpe.first;
 
-	std::unique_ptr<hmp_file> hmp(new hmp_file{});
 	char buf[8];
-	if ((PHYSFS_read(fp, buf, 1, 8) != 8) || (memcmp(buf, "HMIMIDIP", 8)))
-	{
-		return NULL;
-	}
+	const auto physfs_error = [](hmp_open_error e) {
+		return hmp_open_result{nullptr, e, PHYSFS_getLastErrorCode()};
+	};
+	const auto data_error = [](hmp_open_error e) {
+		return hmp_open_result{nullptr, e, PHYSFS_ErrorCode{}};
+	};
+	if (PHYSFS_read(fp, buf, 1, 8) != 8)
+		return physfs_error(hmp_open_error::physfs_read_header);
+	if (memcmp(buf, "HMIMIDIP", 8))
+		return data_error(hmp_open_error::content_header);
 
-	if (PHYSFSX_fseek(fp, 0x30, SEEK_SET))
-	{
-		return NULL;
-	}
+	if (!PHYSFS_seek(fp, 0x30))
+		return physfs_error(hmp_open_error::physfs_seek0);
 
 	unsigned num_tracks;
 	if (PHYSFS_read(fp, &num_tracks, 4, 1) != 1)
-	{
-		return NULL;
-	}
+		return physfs_error(hmp_open_error::physfs_read_tracks);
 
 	if ((num_tracks < 1) || (num_tracks > HMP_TRACKS))
-	{
-		return NULL;
-	}
+		return data_error(hmp_open_error::track_count);
+	std::unique_ptr<hmp_file> hmp(new hmp_file{});
 	hmp->num_trks = num_tracks;
 
-	if (PHYSFSX_fseek(fp, 0x38, SEEK_SET))
-	{
-		return NULL;
-	}
+	if (!PHYSFS_seek(fp, 0x38))
+		return physfs_error(hmp_open_error::physfs_seek1);
 	if (PHYSFS_read(fp, &tempo, 4, 1) != 1)
-	{
-		return NULL;
-	}
+		return physfs_error(hmp_open_error::physfs_read_tempo);
 	hmp->tempo = INTEL_INT(tempo);
 
-	if (PHYSFSX_fseek(fp, 0x308, SEEK_SET))
-	{
-		return NULL;
-	}
+	if (!PHYSFS_seek(fp, 0x308))
+		return physfs_error(hmp_open_error::physfs_seek2);
 
 	range_for (auto &i, partial_range(hmp->trks, num_tracks))
 	{
-		if ((PHYSFSX_fseek(fp, 4, SEEK_CUR)) || (PHYSFS_read(fp, &data, 4, 1) != 1))
-		{
-			return NULL;
-		}
+		std::array<int, 3> tdata;
+		/* Discard tdata[0] and tdata[2].  They are read to avoid needing a
+		 * seek operation to skip them.
+		 */
+		if (PHYSFS_read(fp, tdata.data(), sizeof(tdata[0]), tdata.size()) != tdata.size())
+			return physfs_error(hmp_open_error::physfs_read_track_length);
 
+		int data = tdata[1];
 		data -= 12;
 		i.len = data;
 		i.data = std::make_unique<uint8_t[]>(data);
 		/* finally, read track data */
-		if ((PHYSFSX_fseek(fp, 4, SEEK_CUR)) || (PHYSFS_read(fp, i.data.get(), data, 1) != 1))
-		{
-			return NULL;
-		}
+		if (PHYSFS_read(fp, i.data.get(), data, 1) != 1)
+			return physfs_error(hmp_open_error::physfs_read_track_data);
 		i.loop_set = 0;
 	}
 	hmp->filesize = PHYSFS_fileLength(fp);
-	return hmp;
+	return {std::move(hmp), hmp_open_error::None, PHYSFS_ErrorCode{}};
 }
 
 #ifdef _WIN32
 // PLAY HMP AS MIDI
+namespace {
 
 void hmp_stop(hmp_file *hmp)
 {
@@ -132,7 +133,6 @@ void hmp_stop(hmp_file *hmp)
 	while ((mhdr = hmp->evbuf)) {
 		midiOutUnprepareHeader(reinterpret_cast<HMIDIOUT>(hmp->hmidi), mhdr, sizeof(MIDIHDR));
 		hmp->evbuf = mhdr->lpNext;
-		d_free(mhdr);
 	}
 
 	if (hmp->hmidi) {
@@ -326,22 +326,19 @@ static int fill_buffer(hmp_file *hmp) {
 	return 0;
 }
 
-static int setup_buffers(hmp_file *hmp) {
-	MIDIHDR *buf, *lastbuf;
-
-	lastbuf = NULL;
-	for (int i = 0; i < HMP_BUFFERS; i++) {
-		if (!(buf = reinterpret_cast<MIDIHDR *>(d_malloc(HMP_BUFSIZE + sizeof(MIDIHDR)))))
-			return HMP_OUT_OF_MEM;
-		memset(buf, 0, sizeof(MIDIHDR));
-		buf->lpData = reinterpret_cast<char *>(buf) + sizeof(MIDIHDR);
-		buf->dwBufferLength = HMP_BUFSIZE;
-		buf->dwUser = reinterpret_cast<uintptr_t>(hmp);
-		buf->lpNext = lastbuf;
-		lastbuf = buf;
+static void setup_buffers(hmp_file &hmp)
+{
+	MIDIHDR *lastbuf = nullptr;
+	for (auto &&[header, buffer] : zip(hmp.midi_headers, hmp.midi_buffers))
+	{
+		header = {};
+		header.lpData = buffer.data();
+		header.dwBufferLength = std::size(buffer);
+		header.dwUser = reinterpret_cast<uintptr_t>(std::addressof(hmp));
+		header.lpNext = lastbuf;
+		lastbuf = &header;
 	}
-	hmp->evbuf = lastbuf;
-	return 0;
+	hmp.evbuf = lastbuf;
 }
 
 static void reset_tracks(struct hmp_file *hmp)
@@ -393,8 +390,6 @@ static void _stdcall midi_callback(HMIDISTRM, UINT uMsg, DWORD, DWORD_PTR dw1, D
 			hmp->bufs_in_mm++;
 		}
 	}
-
-
 }
 
 static void setup_tempo(hmp_file *hmp, unsigned long tempo) {
@@ -404,6 +399,8 @@ static void setup_tempo(hmp_file *hmp, unsigned long tempo) {
 	*(p++) = 0;
 	*(p++) = ((static_cast<DWORD>(MEVT_TEMPO))<<24) | tempo;
 	mhdr->dwBytesRecorded += 12;
+}
+
 }
 
 void hmp_setvolume(hmp_file *hmp, int volume)
@@ -426,8 +423,7 @@ int hmp_play(hmp_file *hmp, int bLoop)
 	hmp->looping = 0;
 	hmp->devid = MIDI_MAPPER;
 
-	if ((rc = setup_buffers(hmp)))
-		return rc;
+	setup_buffers(*hmp);
 	if ((midiStreamOpen(&hmp->hmidi, &hmp->devid, 1, reinterpret_cast<DWORD_PTR>(&midi_callback), 0, CALLBACK_FUNCTION)) != MMSYSERR_NOERROR)
 	{
 		hmp->hmidi = NULL;
@@ -597,6 +593,8 @@ void hmp_reset()
 }
 #endif
 
+namespace {
+
 // CONVERSION FROM HMP TO MIDI
 
 static void hmptrk2mid(ubyte* data, int size, std::vector<uint8_t> &midbuf)
@@ -670,7 +668,7 @@ static void hmptrk2mid(ubyte* data, int size, std::vector<uint8_t> &midbuf)
 struct be_bytebuffer_t : serial::writer::bytebuffer_t
 {
 	be_bytebuffer_t(pointer u) : bytebuffer_t(u) {}
-	static uint16_t endian() { return big_endian; }
+	static constexpr bytebuffer_t::big_endian_type endian{};
 };
 
 const std::array<uint8_t, 10> magic_header{{
@@ -693,13 +691,22 @@ struct midhdr
 
 DEFINE_SERIAL_CONST_UDT_TO_MESSAGE(midhdr, m, (magic_header, m.num_trks, m.time_div, tempo));
 
-void hmp2mid(const char *hmp_name, std::vector<uint8_t> &midbuf)
+}
+
+hmpmid_result hmp2mid(const char *hmp_name)
 {
-	std::unique_ptr<hmp_file> hmp = hmp_open(hmp_name);
+	auto &&[hmp, hoe, pec] = hmp_open(hmp_name);
 	if (!hmp)
-		return;
+	{
+		if (underlying_value(hoe) <= static_cast<unsigned>(hmp_open_error::physfs_read_track_data))
+			con_printf(CON_CRITICAL, "Failed to read HMP music %s: hmp_open_error=%u; PHYSFS_ErrorCode=%u/%s", hmp_name, underlying_value(hoe), pec, PHYSFS_getErrorByCode(pec));
+		else
+			con_printf(CON_CRITICAL, "Failed to read HMP music %s: hmp_open_error=%u", hmp_name, underlying_value(hoe));
+		return {std::vector<uint8_t>{}, hoe};
+	}
 
 	const midhdr mh(hmp.get());
+	std::vector<uint8_t> midbuf;
 	// write MIDI-header
 	midbuf.resize(serial::message_type<decltype(mh)>::maximum_size);
 	be_bytebuffer_t bb(&midbuf[0]);
@@ -716,6 +723,7 @@ void hmp2mid(const char *hmp_name, std::vector<uint8_t> &midbuf)
 		be_bytebuffer_t bbmi(&midbuf[midtrklenpos]);
 		serial::process_buffer(bbmi, static_cast<int32_t>(size_after - size_before));
 	}
+	return {midbuf, hmp_open_error::None};
 }
 
 }

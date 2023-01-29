@@ -14,9 +14,12 @@ namespace dcx {
  * See d_array.h for a full description.
  */
 template <std::size_t N, typename E>
-struct enumerated_bitset : std::bitset<N>
+class enumerated_bitset : std::bitset<N>
 {
 	using base_type = std::bitset<N>;
+public:
+	using base_type::base_type;
+	using base_type::size;
 	constexpr typename base_type::reference operator[](E position)
 	{
 		return this->base_type::operator[](static_cast<std::size_t>(position));
@@ -24,6 +27,18 @@ struct enumerated_bitset : std::bitset<N>
 	constexpr bool operator[](E position) const
 	{
 		return this->base_type::operator[](static_cast<std::size_t>(position));
+	}
+	enumerated_bitset &reset()
+	{
+		return static_cast<enumerated_bitset &>(this->base_type::reset());
+	}
+	enumerated_bitset &reset(E position)
+	{
+		return static_cast<enumerated_bitset &>(this->base_type::reset(static_cast<std::size_t>(position)));
+	}
+	enumerated_bitset &set(E position)
+	{
+		return static_cast<enumerated_bitset &>(this->base_type::set(static_cast<std::size_t>(position)));
 	}
 	[[nodiscard]]
 	static constexpr bool valid_index(std::size_t s)

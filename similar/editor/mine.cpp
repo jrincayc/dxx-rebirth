@@ -47,6 +47,7 @@ COPYRIGHT 1993-1998 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include "d_enumerate.h"
 #include "d_range.h"
 #include "d_underlying_value.h"
+#include "partial_range.h"
 
 #define REMOVE_EXT(s)  (*(strchr( (s), '.' ))='\0')
 
@@ -421,16 +422,16 @@ static int save_mine_data(PHYSFS_File * SaveFile)
 	mine_editor.newsegment_size     =   sizeof(segment);
 
 	// Next 3 vars added 10/07 by JAS
-	mine_editor.Curside             =   Curside;
+	mine_editor.Curside             =   underlying_value(Curside);
 	if (Markedsegp)
 		mine_editor.Markedsegp      =   Markedsegp;
 	else									  
 		mine_editor.Markedsegp       =   -1;
-	mine_editor.Markedside          =   Markedside;
+	mine_editor.Markedside          =   underlying_value(Markedside);
 	range_for (const int i, xrange(10u))
 		mine_editor.Groupsegp[i]	  =	vmsegptridx(Groupsegp[i]);
 	range_for (const int i, xrange(10u))
-		mine_editor.Groupside[i]     =	Groupside[i];
+		mine_editor.Groupside[i] = underlying_value(Groupside[i]);
 
 	if (editor_offset != PHYSFS_tell(SaveFile))
 		Error( "OFFSETS WRONG IN MINE.C!" );
@@ -519,11 +520,11 @@ static void dump_fix_as_ushort( fix value, int nbits, PHYSFS_File *SaveFile )
 	PHYSFS_writeULE16(SaveFile, short_value);
 }
 
-static void write_children(const shared_segment &seg, const unsigned bit_mask, PHYSFS_File *const SaveFile)
+static void write_children(const shared_segment &seg, const sidemask_t bit_mask, PHYSFS_File *const SaveFile)
 {
 	for (const auto &&[bit, child] : enumerate(seg.children))
 	{
-		if (bit_mask & (1 << bit))
+		if (bit_mask & build_sidemask(bit))
 			PHYSFS_writeSLE16(SaveFile, child);
 	}
 }
@@ -534,9 +535,9 @@ static void write_verts(const shared_segment &seg, PHYSFS_File *const SaveFile)
 		PHYSFS_writeSLE16(SaveFile, static_cast<uint16_t>(i));
 }
 
-static void write_special(const shared_segment &seg, const unsigned bit_mask, PHYSFS_File *const SaveFile)
+static void write_special(const shared_segment &seg, const sidemask_t bit_mask, PHYSFS_File *const SaveFile)
 {
-	if (bit_mask & (1 << MAX_SIDES_PER_SEGMENT))
+	if (bit_mask & build_sidemask(MAX_SIDES_PER_SEGMENT))
 	{
 		PHYSFSX_writeU8(SaveFile, underlying_value(seg.special));
 		PHYSFSX_writeU8(SaveFile, underlying_value(seg.matcen_num));
@@ -558,7 +559,6 @@ int save_mine_data_compiled(PHYSFS_File *SaveFile)
 {
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
 	ubyte 	version = COMPILED_MINE_VERSION;
-	ubyte		bit_mask = 0;
 
 	med_compress_mine();
 	warn_if_concave_segments();
@@ -594,22 +594,24 @@ int save_mine_data_compiled(PHYSFS_File *SaveFile)
 		PHYSFSX_writeVector(SaveFile, i);
 	
 	const auto Num_segments = LevelSharedSegmentState.Num_segments;
-	for (segnum_t segnum = 0; segnum < Num_segments; segnum++)
+	auto &&segment_range = partial_const_range(Segments, Num_segments);
+	for (const cscusegment seg : segment_range)
 	{
-		const cscusegment &&seg = vcsegptr(segnum);
+		{
+		sidemask_t bit_mask{};
 		for (const auto &&[sidenum, child] : enumerate(seg.s.children))
 		{
 			if (child != segment_none)
-				bit_mask |= (1 << sidenum);
+				bit_mask |= build_sidemask(sidenum);
 		}
 
 		if (seg.s.special != segment_special::nothing || seg.s.matcen_num != materialization_center_number::None || seg.s.station_idx != station_number::None)
-			bit_mask |= (1 << MAX_SIDES_PER_SEGMENT);
+			bit_mask |= build_sidemask(MAX_SIDES_PER_SEGMENT);
 
 		if (New_file_format_save)
-			PHYSFSX_writeU8(SaveFile, bit_mask);
+			PHYSFSX_writeU8(SaveFile, underlying_value(bit_mask));
 		else
-			bit_mask = 0x7F;
+			bit_mask = sidemask_t{0x7f};
 
 		if (Gamesave_current_version == 5)	// d2 SHAREWARE level
 		{
@@ -627,25 +629,26 @@ int save_mine_data_compiled(PHYSFS_File *SaveFile)
 
 		if (Gamesave_current_version <= 5) // descent 1 thru d2 SHAREWARE level
 			dump_fix_as_ushort(seg.u.static_light, 4, SaveFile);
-	
+		}
+
 		// Write the walls as a 6 byte array
-		bit_mask = 0;
+		{
+		sidemask_t bit_mask{};
 		for (const auto &&[sidenum, side] : enumerate(seg.s.sides))
 		{
 			if (side.wall_num != wall_none)
-			{
-				bit_mask |= (1 << sidenum);
-			}
+				bit_mask |= build_sidemask(sidenum);
 		}
 		if (New_file_format_save)
-			PHYSFSX_writeU8(SaveFile, bit_mask);
+			PHYSFSX_writeU8(SaveFile, underlying_value(bit_mask));
 		else
-			bit_mask = 0x3F;
+			bit_mask = sidemask_t{0x3f};
 
 		for (const auto &&[sidenum, side] : enumerate(seg.s.sides))
 		{
-			if (bit_mask & (1 << sidenum))
+			if (bit_mask & build_sidemask(sidenum))
 				PHYSFSX_writeU8(SaveFile, underlying_value(side.wall_num));
+		}
 		}
 
 		for (const auto sidenum : MAX_SIDES_PER_SEGMENT)
@@ -687,8 +690,8 @@ int save_mine_data_compiled(PHYSFS_File *SaveFile)
 
 #if defined(DXX_BUILD_DESCENT_II)
 	if (Gamesave_current_version > 5)
-		for (segnum_t i = 0; i < Num_segments; i++)
-			segment2_write(vcsegptr(i), SaveFile);
+		for (auto &s : segment_range)
+			segment2_write(s, SaveFile);
 #endif
 
 	return 0;

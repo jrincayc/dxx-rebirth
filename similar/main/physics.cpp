@@ -311,7 +311,7 @@ public:
 
 //	-----------------------------------------------------------------------------------------------------------
 //Simulate a physics object for this frame
-window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &obj_previous_position, phys_visited_seglist *const phys_segs)
+window_event_result do_physics_sim(const d_robot_info_array &Robot_info, const vmobjptridx_t obj, const vms_vector &obj_previous_position, phys_visited_seglist *const phys_segs)
 {
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
 	auto &Objects = LevelUniqueObjectState.Objects;
@@ -320,12 +320,10 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 	auto &vmobjptr = Objects.vmptr;
 	ignore_objects_array_t ignore_obj_list;
 	int try_again;
-	int fate=0;
 	vms_vector ipos;		//position after this frame
 	segnum_t WallHitSeg;
 	sidenum_t WallHitSide;
 	fvi_info hit_info;
-	fvi_query fq;
 	vms_vector save_pos;
 	fix drag;
 	fix sim_time;
@@ -410,6 +408,7 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 	auto &vcvertptr = Vertices.vcptr;
 	auto &Walls = LevelUniqueWallSubsystemState.Walls;
 	auto &vcwallptr = Walls.vcptr;
+	auto fate = fvi_hit_type::None;
 	do {
 		try_again = 0;
 
@@ -425,23 +424,25 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 		if (count > 8) break; // in original code this was 3 for all non-player objects. still leave us some limit in case fvi goes apeshit.
 
 		const auto new_pos = vm_vec_add(obj->pos,frame_vec);
-		fq.p0						= &obj->pos;
-		fq.startseg				= obj->segnum;
-		fq.p1						= &new_pos;
-		fq.rad					= obj->size;
-		fq.thisobjnum			= obj;
-		fq.ignore_obj_list	= ignore_obj_list;
-		fq.flags					= FQ_CHECK_OBJS;
-
+		int flags = 0;
 		if (obj->type == OBJ_WEAPON)
-			fq.flags |= FQ_TRANSPOINT;
+			flags |= FQ_TRANSPOINT;
 
 		if (phys_segs)
-			fq.flags |= FQ_GET_SEGLIST;
+			flags |= FQ_GET_SEGLIST;
 
-		fate = find_vector_intersection(fq, hit_info);
+		fate = find_vector_intersection(fvi_query{
+			obj->pos,
+			new_pos,
+			ignore_obj_list,
+			&LevelUniqueObjectState,
+			&Robot_info,
+			flags,
+			obj,
+		}, obj->segnum, obj->size, hit_info);
 		//	Matt: Mike's hack.
-		if (fate == HIT_OBJECT) {
+		if (fate == fvi_hit_type::Object)
+		{
 			auto &objp = *vcobjptr(hit_info.hit_object);
 
 			if ((objp.type == OBJ_WEAPON && is_proximity_bomb_or_player_smart_mine(get_weapon_id(objp))) ||
@@ -450,9 +451,8 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 		}
 
 #ifndef NDEBUG
-		if (fate == HIT_BAD_P0) {
+		if (fate == fvi_hit_type::BadP0)
 			Int3();
-		}
 #endif
 
 		if (phys_segs && !hit_info.seglist.empty())
@@ -480,7 +480,7 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 			break;
 		}
 
-		Assert(!((fate==HIT_WALL) && ((WallHitSeg == segment_none) || (WallHitSeg > Highest_segment_index))));
+		assert(!(fate == fvi_hit_type::Wall && (WallHitSeg == segment_none || WallHitSeg > Highest_segment_index)));
 
 		save_pos = obj->pos;			//save the object's position
 		auto save_seg = obj->segnum;
@@ -493,7 +493,7 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 			obj_relink(vmobjptr, Segments.vmptr, obj, obj_segp);
 
 		//if start point not in segment, move object to center of segment
-		if (get_seg_masks(vcvertptr, obj->pos, Segments.vcptr(obj->segnum), 0).centermask != 0)
+		if (get_seg_masks(vcvertptr, obj->pos, Segments.vcptr(obj->segnum), 0).centermask != sidemask_t{})
 		{
 			auto n = find_object_seg(LevelSharedSegmentState, LevelUniqueSegmentState, obj);
 			if (n == segment_none)
@@ -520,7 +520,8 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 			vms_vector moved_vec_n;
 			const auto actual_dist = vm_vec_normalized_dir(moved_vec_n,obj->pos,save_pos);
 
-			if (fate==HIT_WALL && vm_vec_dot(moved_vec_n,frame_vec) < 0) {		//moved backwards
+			if (fate == fvi_hit_type::Wall && vm_vec_dot(moved_vec_n,frame_vec) < 0)
+			{		//moved backwards
 
 				//don't change position or sim_time
 
@@ -551,7 +552,7 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 
 		switch( fate )		{
 
-			case HIT_WALL:		{
+			case fvi_hit_type::Wall:		{
 				fix hit_speed=0,wall_part=0;
 
 				// Find hit speed	
@@ -565,7 +566,7 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 #if defined(DXX_BUILD_DESCENT_II)
 						LevelSharedSegmentState.DestructibleLights,
 #endif
-						obj, hit_speed, Segments.vmptridx(WallHitSeg), WallHitSide, hit_info.hit_pnt);
+						Robot_info, obj, hit_speed, Segments.vmptridx(WallHitSeg), WallHitSide, hit_info.hit_pnt);
 				/*
 				 * Due to the nature of this loop, it's possible that a local player may receive scrape damage multiple times in one frame.
 				 * Check if we received damage and do not apply more damage (nor produce damage sounds/flashes/bumps, etc) for the rest of the loop.
@@ -656,7 +657,7 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 				break;
 			}
 
-			case HIT_OBJECT:		{
+			case fvi_hit_type::Object:		{
 				vms_vector old_vel;
 
 				// Mark the hit object so that on a retry the fvi code
@@ -678,9 +679,7 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 					vm_vec_scale_add(pos_hit,ppos0,pos_hit,fixdiv(size0, size0 + size1));
 
 					old_vel = obj->mtype.phys_info.velocity;
-
-					collide_two_objects( obj, hit, pos_hit);
-
+					collide_two_objects(Robot_info, obj, hit, pos_hit);
 				}
 
 				// Let object continue its movement
@@ -696,18 +695,14 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 
 				break;
 			}	
-			case HIT_NONE:		
+			case fvi_hit_type::None:
 				break;
 
+			case fvi_hit_type::BadP0:
 #ifndef NDEBUG
-			case HIT_BAD_P0:
 				Int3();		// Unexpected collision type: start point not in specified segment.
-				break;
-			default:
-				// Unknown collision type returned from find_vector_intersection!!
-				Int3();
-				break;
 #endif
+				break;
 		}
 	} while ( try_again );
 
@@ -726,7 +721,7 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 	// After collision with objects and walls, set velocity from actual movement
 	if (!obj_stopped && !bounced 
 		&& ((obj->type == OBJ_PLAYER) || (obj->type == OBJ_ROBOT) || (obj->type == OBJ_DEBRIS)) 
-		&& ((fate == HIT_WALL) || (fate == HIT_OBJECT) || (fate == HIT_BAD_P0))
+		&& (fate == fvi_hit_type::Wall || fate == fvi_hit_type::Object || fate == fvi_hit_type::BadP0)
 		)
 	{	
 		const auto moved_vec = vm_vec_sub(obj->pos,start_pos);
@@ -773,7 +768,7 @@ window_event_result do_physics_sim(const vmobjptridx_t obj, const vms_vector &ob
 
 //--WE ALWYS WANT THIS IN, MATT AND MIKE DECISION ON 12/10/94, TWO MONTHS AFTER FINAL 	#ifndef NDEBUG
 	//if end point not in segment, move object to last pos, or segment center
-	if (get_seg_masks(vcvertptr, obj->pos, vcsegptr(obj->segnum), 0).centermask != 0)
+	if (get_seg_masks(vcvertptr, obj->pos, vcsegptr(obj->segnum), 0).centermask != sidemask_t{})
 	{
 		if (find_object_seg(LevelSharedSegmentState, LevelUniqueSegmentState, obj) == segment_none)
 		{

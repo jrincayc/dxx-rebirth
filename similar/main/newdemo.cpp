@@ -290,7 +290,8 @@ static int _newdemo_read( void *buffer, int elsize, int nelem )
 }
 
 template <typename T>
-static typename std::enable_if<std::is_integral<T>::value, int>::type newdemo_read( T *buffer, int elsize, int nelem )
+requires(std::is_integral<T>::value)
+static int newdemo_read(T *buffer, int elsize, int nelem)
 {
 	return _newdemo_read(buffer, elsize, nelem);
 }
@@ -335,7 +336,8 @@ static int _newdemo_write(const void *buffer, int elsize, int nelem )
 }
 
 template <typename T>
-static typename std::enable_if<std::is_integral<T>::value, int>::type newdemo_write(const T *buffer, int elsize, int nelem )
+requires(std::is_integral<T>::value)
+static int newdemo_write(const T *buffer, int elsize, int nelem )
 {
 	return _newdemo_write(buffer, elsize, nelem);
 }
@@ -363,8 +365,9 @@ static void nd_write_int(int i)
 
 static void nd_write_string(const char *str)
 {
-	nd_write_byte(strlen(str) + 1);
-	newdemo_write(str, strlen(str) + 1, 1);
+	const auto n = strlen(str);
+	nd_write_byte(n + 1);
+	newdemo_write(str, n + 1, 1);
 }
 
 static void nd_write_fix(fix f)
@@ -446,9 +449,9 @@ static void nd_read_short(uint16_t *const s)
 
 static void nd_read_segnum16(segnum_t &s)
 {
-	short i;
+	uint16_t i;
 	nd_read_short(&i);
-	s = i;
+	s = segnum_t{i};
 }
 
 static void nd_read_objnum16(objnum_t &o)
@@ -476,9 +479,9 @@ static void nd_read_int(unsigned *i)
 
 static void nd_read_segnum32(segnum_t &s)
 {
-	int i;
+	int32_t i;
 	nd_read_int(&i);
-	s = i;
+	s = segnum_t{static_cast<uint16_t>(i)};
 }
 
 static void nd_read_objnum32(objnum_t &o)
@@ -488,20 +491,14 @@ static void nd_read_objnum32(objnum_t &o)
 	o = i;
 }
 
-static void nd_read_string(char *str, std::size_t max_length)
+static void nd_read_string(const std::span<char> str)
 {
 	sbyte len;
 
 	nd_read_byte(&len);
-	if (static_cast<unsigned>(len) > max_length)
+	if (static_cast<unsigned>(len) > str.size())
 		throw std::runtime_error("demo string too long");
-	newdemo_read(str, len, 1);
-}
-
-template <std::size_t max_length>
-static void nd_read_string(char (&str)[max_length])
-{
-	nd_read_string(str, max_length);
+	newdemo_read(str.data(), len, 1);
 }
 
 static void nd_read_fix(fix *f)
@@ -550,7 +547,7 @@ static void nd_read_shortpos(object_base &obj)
 	nd_read_short(&sp.xo);
 	nd_read_short(&sp.yo);
 	nd_read_short(&sp.zo);
-	nd_read_short(&sp.segment);
+	nd_read_segnum16(sp.segment);
 	nd_read_short(&sp.velx);
 	nd_read_short(&sp.vely);
 	nd_read_short(&sp.velz);
@@ -676,8 +673,11 @@ static void nd_read_object(const vmobjptridx_t obj)
 	case OBJ_CLUTTER:
 		obj->control_source = object::control_type::None;
 		obj->movement_source = object::movement_type::None;
-		obj->size = Polygon_models[obj->id].rad;
-		obj->rtype.pobj_info.model_num = obj->id;
+		{
+			const polygon_model_index pmi{obj->id};
+			obj->size = Polygon_models[pmi].rad;
+			obj->rtype.pobj_info.model_num = pmi;
+		}
 		obj->rtype.pobj_info.subobj_flags = 0;
 		break;
 
@@ -800,7 +800,9 @@ static void nd_read_object(const vmobjptridx_t obj)
 		int tmo;
 
 		if ((obj->type != OBJ_ROBOT) && (obj->type != OBJ_PLAYER) && (obj->type != OBJ_CLUTTER)) {
-			nd_read_int(&(obj->rtype.pobj_info.model_num));
+			int i;
+			nd_read_int(&i);
+			obj->rtype.pobj_info.model_num = static_cast<polygon_model_index>(i);
 			nd_read_int(&(obj->rtype.pobj_info.subobj_flags));
 		}
 
@@ -975,7 +977,7 @@ static void nd_write_object(const vcobjptridx_t objp)
 	case RT_MORPH:
 	case RT_POLYOBJ: {
 		if ((obj.type != OBJ_ROBOT) && (obj.type != OBJ_PLAYER) && (obj.type != OBJ_CLUTTER)) {
-			nd_write_int(obj.rtype.pobj_info.model_num);
+			nd_write_int(underlying_value(obj.rtype.pobj_info.model_num));
 			nd_write_int(obj.rtype.pobj_info.subobj_flags);
 		}
 
@@ -1095,7 +1097,7 @@ void newdemo_record_start_demo()
 		nd_write_byte(static_cast<int8_t>(N_players));
 		range_for (auto &i, partial_const_range(Players, N_players)) {
 			nd_write_string(static_cast<const char *>(i.callsign));
-			nd_write_byte(i.connected);
+			nd_write_byte(underlying_value(i.connected));
 
 			auto &pl_info = vcobjptr(i.objnum)->ctype.player_info;
 			if (Game_mode & GM_MULTI_COOP) {
@@ -1276,12 +1278,12 @@ void newdemo_record_kill_sound_linked_to_object(const vcobjptridx_t objp)
 }
 }
 
-void newdemo_record_wall_hit_process( segnum_t segnum, int side, int damage, int playernum )
+void newdemo_record_wall_hit_process(const segnum_t segnum, const sidenum_t side, int damage, int playernum)
 {
 	pause_game_world_time p;
 	nd_write_byte( ND_EVENT_WALL_HIT_PROCESS );
 	nd_write_int( segnum );
-	nd_write_int( side );
+	nd_write_int(underlying_value(side));
 	nd_write_int( damage );
 	nd_write_int( playernum );
 }
@@ -1306,12 +1308,12 @@ void newdemo_record_secret_exit_blown(int truth)
 	nd_write_int( truth );
 }
 
-void newdemo_record_trigger(const vcsegidx_t segnum, const unsigned side, const objnum_t objnum, const unsigned shot)
+void newdemo_record_trigger(const vcsegidx_t segnum, const sidenum_t side, const objnum_t objnum, const unsigned shot)
 {
 	pause_game_world_time p;
 	nd_write_byte( ND_EVENT_TRIGGER );
 	nd_write_int( segnum );
-	nd_write_int( side );
+	nd_write_int(underlying_value(side));
 	nd_write_int( objnum );
 	nd_write_int(shot);
 }
@@ -1328,12 +1330,12 @@ void newdemo_record_morph_frame(const vcobjptridx_t obj)
 
 }
 
-void newdemo_record_wall_toggle( segnum_t segnum, int side )
+void newdemo_record_wall_toggle(segnum_t segnum, sidenum_t side)
 {
 	pause_game_world_time p;
 	nd_write_byte( ND_EVENT_WALL_TOGGLE );
 	nd_write_int( segnum );
-	nd_write_int( side );
+	nd_write_int(underlying_value(side));
 }
 
 void newdemo_record_control_center_destroyed()
@@ -1426,7 +1428,7 @@ void newdemo_record_player_weapon(int weapon_type, int weapon_num)
 	);
 }
 
-void newdemo_record_effect_blowup(segnum_t segment, int side, const vms_vector &pnt)
+void newdemo_record_effect_blowup(segnum_t segment, sidenum_t side, const vms_vector &pnt)
 {
 	pause_game_world_time p;
 	nd_write_byte (ND_EVENT_EFFECT_BLOWUP);
@@ -1468,26 +1470,30 @@ void newdemo_record_restore_rearview(void)
 	nd_write_byte(ND_EVENT_RESTORE_REARVIEW);
 }
 
-void newdemo_record_wall_set_tmap_num1(const vcsegidx_t seg, const unsigned side, const vcsegidx_t cseg, const unsigned cside, const texture1_value tmap)
+namespace dsx {
+
+void newdemo_record_wall_set_tmap_num1(const vcsegidx_t seg, const sidenum_t side, const vcsegidx_t cseg, const sidenum_t cside, const texture1_value tmap)
 {
 	pause_game_world_time p;
 	nd_write_byte(ND_EVENT_WALL_SET_TMAP_NUM1);
 	nd_write_short(seg);
-	nd_write_byte(side);
+	nd_write_byte(underlying_value(side));
 	nd_write_short(cseg);
-	nd_write_byte(cside);
+	nd_write_byte(underlying_value(cside));
 	nd_write_short(static_cast<uint16_t>(tmap));
 }
 
-void newdemo_record_wall_set_tmap_num2(const vcsegidx_t seg, const unsigned side, const vcsegidx_t cseg, const unsigned cside, const texture2_value tmap)
+void newdemo_record_wall_set_tmap_num2(const vcsegidx_t seg, const sidenum_t side, const vcsegidx_t cseg, const sidenum_t cside, const texture2_value tmap)
 {
 	pause_game_world_time p;
 	nd_write_byte(ND_EVENT_WALL_SET_TMAP_NUM2);
 	nd_write_short(seg);
-	nd_write_byte(side);
+	nd_write_byte(underlying_value(side));
 	nd_write_short(cseg);
-	nd_write_byte(cside);
+	nd_write_byte(underlying_value(cside));
 	nd_write_short(static_cast<uint16_t>(tmap));
+}
+
 }
 
 void newdemo_record_multi_cloak(int pnum)
@@ -1588,12 +1594,12 @@ void newdemo_record_secondary_ammo(int new_ammo)
 	nd_write_short(static_cast<short>(nd_record_v_secondary_ammo = new_ammo));
 }
 
-void newdemo_record_door_opening(segnum_t segnum, int side)
+void newdemo_record_door_opening(segnum_t segnum, sidenum_t side)
 {
 	pause_game_world_time p;
 	nd_write_byte(ND_EVENT_DOOR_OPENING);
 	nd_write_short(segnum);
-	nd_write_byte(static_cast<int8_t>(side));
+	nd_write_byte(underlying_value(side));
 }
 
 void newdemo_record_laser_level(const laser_level old_level, const laser_level new_level)
@@ -1728,7 +1734,7 @@ static int newdemo_read_demo_start(enum purpose_type purpose)
 	if (purpose == PURPOSE_REWRITE)
 		nd_write_byte(c);
 	if ((c != ND_EVENT_START_DEMO) || nd_playback_v_bad_read) {
-		nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s %s", TXT_CANT_PLAYBACK, TXT_DEMO_CORRUPT);
+		nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s %s", TXT_CANT_PLAYBACK, TXT_DEMO_CORRUPT);
 		return 1;
 	}
 	nd_read_byte(&version);
@@ -1739,7 +1745,7 @@ static int newdemo_read_demo_start(enum purpose_type purpose)
 		shareware = 1;
 	else if (version < DEMO_VERSION) {
 		if (purpose == PURPOSE_CHOSE_PLAY) {
-			nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s %s", TXT_CANT_PLAYBACK, TXT_DEMO_OLD);
+			nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s %s", TXT_CANT_PLAYBACK, TXT_DEMO_OLD);
 		}
 		return 1;
 	}
@@ -1751,22 +1757,22 @@ static int newdemo_read_demo_start(enum purpose_type purpose)
 	if ((game_type == DEMO_GAME_TYPE_SHAREWARE) && shareware)
 		;	// all good
 	else if (game_type != DEMO_GAME_TYPE) {
-		nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s %s", TXT_CANT_PLAYBACK, TXT_DEMO_OLD);
+		nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s %s", TXT_CANT_PLAYBACK, TXT_DEMO_OLD);
 
 		return 1;
 	}
 #elif defined(DXX_BUILD_DESCENT_II)
 	if (game_type < DEMO_GAME_TYPE) {
-		nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s %s\n%s", TXT_CANT_PLAYBACK, TXT_RECORDED, "    In Descent: First Strike");
+		nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s %s\n%s", TXT_CANT_PLAYBACK, TXT_RECORDED, "    In Descent: First Strike");
 		return 1;
 	}
 	if (game_type != DEMO_GAME_TYPE) {
-		nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s %s\n%s", TXT_CANT_PLAYBACK, TXT_RECORDED, "   In Unknown Descent version");
+		nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s %s\n%s", TXT_CANT_PLAYBACK, TXT_RECORDED, "   In Unknown Descent version");
 		return 1;
 	}
 	if (version < DEMO_VERSION) {
 		if (purpose == PURPOSE_CHOSE_PLAY) {
-			nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s %s", TXT_CANT_PLAYBACK, TXT_DEMO_OLD);
+			nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s %s", TXT_CANT_PLAYBACK, TXT_DEMO_OLD);
 		}
 		return 1;
 	}
@@ -1836,11 +1842,15 @@ static int newdemo_read_demo_start(enum purpose_type purpose)
 				DXX_MAKE_VAR_UNDEFINED(player_info.cloak_time);
 				DXX_MAKE_VAR_UNDEFINED(player_info.invulnerable_time);
 				nd_read_string(i.callsign.buffer());
-				nd_read_byte(&i.connected);
+				{
+					uint8_t connected;
+					nd_read_byte(&connected);
+					i.connected = player_connection_status{connected};
+				}
 				if (purpose == PURPOSE_REWRITE)
 				{
 					nd_write_string(static_cast<const char *>(i.callsign));
-					nd_write_byte(i.connected);
+					nd_write_byte(underlying_value(i.connected));
 				}
 
 				if (Newdemo_game_mode & GM_MULTI_COOP) {
@@ -1921,7 +1931,7 @@ static int newdemo_read_demo_start(enum purpose_type purpose)
 		if ((purpose != PURPOSE_REWRITE) && load_mission_by_name(mission_entry_predicate{current_mission}, mission_name_type::guess))
 		{
 			if (purpose == PURPOSE_CHOSE_PLAY) {
-				nm_messagebox(menu_title{nullptr}, 1, TXT_OK, TXT_NOMISSION4DEMO, current_mission);
+				nm_messagebox(menu_title{nullptr}, {TXT_OK}, TXT_NOMISSION4DEMO, current_mission);
 			}
 			return 1;
 		}
@@ -1934,7 +1944,7 @@ static int newdemo_read_demo_start(enum purpose_type purpose)
 		if (load_mission_by_name(mission_predicate, mission_name_type::guess))
 		{
 		if (purpose != PURPOSE_RANDOM_PLAY) {
-			nm_messagebox(menu_title{nullptr}, 1, TXT_OK, TXT_NOMISSION4DEMO, current_mission);
+			nm_messagebox(menu_title{nullptr}, {TXT_OK}, TXT_NOMISSION4DEMO, current_mission);
 		}
 		return 1;
 		}
@@ -2158,7 +2168,7 @@ static int newdemo_read_frame_information(int rewrite)
 				// HACK HACK HACK -- the viewer to segment 0 for bogus view.
 
 				if (segnum > Highest_segment_index)
-					segnum = 0;
+					segnum = {};
 				obj_link_unchecked(Objects.vmptr, viewer_vmobj, Segments.vmptridx(segnum));
 			}
 			}
@@ -2462,7 +2472,7 @@ static int newdemo_read_frame_information(int rewrite)
 			if (rewrite)
 			{
 				nd_write_int(segnum);
-				nd_write_int(side);
+				nd_write_int(underlying_value(side));
 				break;
 			}
 			if (Newdemo_vcr_state != ND_STATE_PAUSED)
@@ -2818,12 +2828,13 @@ static int newdemo_read_frame_information(int rewrite)
 
 
 		case ND_EVENT_WALL_SET_TMAP_NUM1: {
-			uint16_t seg, cseg, tmap;
+			segnum_t seg, cseg;
+			uint16_t tmap;
 			uint8_t side, cside;
 
-			nd_read_short(&seg);
+			nd_read_segnum16(seg);
 			nd_read_byte(&side);
-			nd_read_short(&cseg);
+			nd_read_segnum16(cseg);
 			nd_read_byte(&cside);
 			nd_read_short( &tmap );
 			if (rewrite)
@@ -2841,12 +2852,13 @@ static int newdemo_read_frame_information(int rewrite)
 		}
 
 		case ND_EVENT_WALL_SET_TMAP_NUM2: {
-			uint16_t seg, cseg, tmap;
+			segnum_t seg, cseg;
+			uint16_t tmap;
 			uint8_t side, cside;
 
-			nd_read_short(&seg);
+			nd_read_segnum16(seg);
 			nd_read_byte(&side);
-			nd_read_short(&cseg);
+			nd_read_segnum16(cseg);
 			nd_read_byte(&cside);
 			nd_read_short( &tmap );
 			if (rewrite)
@@ -2979,7 +2991,7 @@ static int newdemo_read_frame_information(int rewrite)
 			auto &plr = *vmplayerptr(static_cast<unsigned>(pnum));
 			auto &player_info = vmobjptr(plr.objnum)->ctype.player_info;
 			if ((Newdemo_vcr_state == ND_STATE_REWINDING) || (Newdemo_vcr_state == ND_STATE_ONEFRAMEBACKWARD)) {
-				plr.connected = CONNECT_DISCONNECTED;
+				plr.connected = player_connection_status::disconnected;
 				if (!new_player) {
 					plr.callsign = old_callsign;
 					player_info.net_killed_total = killed_total;
@@ -2988,7 +3000,7 @@ static int newdemo_read_frame_information(int rewrite)
 					N_players--;
 				}
 			} else if ((Newdemo_vcr_state == ND_STATE_PLAYBACK) || (Newdemo_vcr_state == ND_STATE_FASTFORWARD) || (Newdemo_vcr_state == ND_STATE_ONEFRAMEFORWARD)) {
-				plr.connected = CONNECT_PLAYING;
+				plr.connected = player_connection_status::playing;
 				player_info.net_kills_total = 0;
 				player_info.net_killed_total = 0;
 				plr.callsign = new_callsign;
@@ -3008,9 +3020,9 @@ static int newdemo_read_frame_information(int rewrite)
 				break;
 			}
 			if ((Newdemo_vcr_state == ND_STATE_REWINDING) || (Newdemo_vcr_state == ND_STATE_ONEFRAMEBACKWARD))
-				vmplayerptr(static_cast<unsigned>(pnum))->connected = CONNECT_DISCONNECTED;
+				vmplayerptr(static_cast<unsigned>(pnum))->connected = player_connection_status::disconnected;
 			else if ((Newdemo_vcr_state == ND_STATE_PLAYBACK) || (Newdemo_vcr_state == ND_STATE_FASTFORWARD) || (Newdemo_vcr_state == ND_STATE_ONEFRAMEFORWARD))
-				vmplayerptr(static_cast<unsigned>(pnum))->connected = CONNECT_PLAYING;
+				vmplayerptr(static_cast<unsigned>(pnum))->connected = player_connection_status::playing;
 			break;
 		}
 
@@ -3025,14 +3037,14 @@ static int newdemo_read_frame_information(int rewrite)
 			}
 #if defined(DXX_BUILD_DESCENT_I)
 			if ((Newdemo_vcr_state == ND_STATE_REWINDING) || (Newdemo_vcr_state == ND_STATE_ONEFRAMEBACKWARD))
-				vmplayerptr(static_cast<unsigned>(pnum))->connected = CONNECT_DISCONNECTED;
+				vmplayerptr(static_cast<unsigned>(pnum))->connected = player_connection_status::disconnected;
 			else if ((Newdemo_vcr_state == ND_STATE_PLAYBACK) || (Newdemo_vcr_state == ND_STATE_FASTFORWARD) || (Newdemo_vcr_state == ND_STATE_ONEFRAMEFORWARD))
-				vmplayerptr(static_cast<unsigned>(pnum))->connected = CONNECT_PLAYING;
+				vmplayerptr(static_cast<unsigned>(pnum))->connected = player_connection_status::playing;
 #elif defined(DXX_BUILD_DESCENT_II)
 			if ((Newdemo_vcr_state == ND_STATE_REWINDING) || (Newdemo_vcr_state == ND_STATE_ONEFRAMEBACKWARD))
-				vmplayerptr(static_cast<unsigned>(pnum))->connected = CONNECT_PLAYING;
+				vmplayerptr(static_cast<unsigned>(pnum))->connected = player_connection_status::playing;
 			else if ((Newdemo_vcr_state == ND_STATE_PLAYBACK) || (Newdemo_vcr_state == ND_STATE_FASTFORWARD) || (Newdemo_vcr_state == ND_STATE_ONEFRAMEFORWARD))
-				vmplayerptr(static_cast<unsigned>(pnum))->connected = CONNECT_DISCONNECTED;
+				vmplayerptr(static_cast<unsigned>(pnum))->connected = player_connection_status::disconnected;
 #endif
 			break;
 		}
@@ -3272,7 +3284,7 @@ static int newdemo_read_frame_information(int rewrite)
 				}
 				if (loaded_level < Current_mission->last_secret_level || loaded_level > Current_mission->last_level)
 				{
-					nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s\n%s\n%s", TXT_CANT_PLAYBACK, TXT_LEVEL_CANT_LOAD, TXT_DEMO_OLD_CORRUPT);
+					nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s\n%s\n%s", TXT_CANT_PLAYBACK, TXT_LEVEL_CANT_LOAD, TXT_DEMO_OLD_CORRUPT);
 					Current_mission.reset();
 					return -1;
 				}
@@ -3363,24 +3375,24 @@ static int newdemo_read_frame_information(int rewrite)
 	if (nd_playback_v_dead)
 	{
 		Rear_view = 0;
-		if (PlayerCfg.CockpitMode[1] != CM_LETTERBOX)
-			select_cockpit(CM_LETTERBOX);
+		if (PlayerCfg.CockpitMode[1] != cockpit_mode_t::letterbox)
+			select_cockpit(cockpit_mode_t::letterbox);
 	}
 #if defined(DXX_BUILD_DESCENT_II)
 	else if (nd_playback_v_guided)
 	{
 		Rear_view = 0;
-		if (PlayerCfg.CockpitMode[1] != CM_FULL_SCREEN || PlayerCfg.CockpitMode[1] != CM_STATUS_BAR)
+		if (PlayerCfg.CockpitMode[1] != cockpit_mode_t::full_screen || PlayerCfg.CockpitMode[1] != cockpit_mode_t::status_bar)
 		{
-			select_cockpit((PlayerCfg.CockpitMode[0] == CM_FULL_SCREEN)?CM_FULL_SCREEN:CM_STATUS_BAR);
+			select_cockpit((PlayerCfg.CockpitMode[0] == cockpit_mode_t::full_screen) ? cockpit_mode_t::full_screen : cockpit_mode_t::status_bar);
 		}
 	}
 #endif
 	else if (nd_playback_v_rear)
 	{
 		Rear_view = nd_playback_v_rear;
-		if (PlayerCfg.CockpitMode[0] == CM_FULL_COCKPIT)
-			select_cockpit(CM_REAR_VIEW);
+		if (PlayerCfg.CockpitMode[0] == cockpit_mode_t::full_cockpit)
+			select_cockpit(cockpit_mode_t::rear_view);
 	}
 	else
 	{
@@ -3390,7 +3402,7 @@ static int newdemo_read_frame_information(int rewrite)
 	}
 
 	if (nd_playback_v_bad_read) {
-		nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s %s", TXT_DEMO_ERR_READING, TXT_DEMO_OLD_CORRUPT);
+		nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s %s", TXT_DEMO_ERR_READING, TXT_DEMO_OLD_CORRUPT);
 		Current_mission.reset();
 	}
 
@@ -3434,7 +3446,7 @@ window_event_result newdemo_goto_end(int to_rewrite)
 	{
 		if (level < Current_mission->last_secret_level || level > Current_mission->last_level)
 		{
-			nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s\n%s\n%s", TXT_CANT_PLAYBACK, TXT_LEVEL_CANT_LOAD, TXT_DEMO_OLD_CORRUPT);
+			nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s\n%s\n%s", TXT_CANT_PLAYBACK, TXT_LEVEL_CANT_LOAD, TXT_DEMO_OLD_CORRUPT);
 			Current_mission.reset();
 			newdemo_stop_playback();
 			return window_event_result::close;
@@ -3552,7 +3564,11 @@ window_event_result newdemo_goto_end(int to_rewrite)
 		//		nd_read_byte(&N_players);
 		range_for (auto &i, partial_range(Players, N_players)) {
 			nd_read_string(i.callsign.buffer());
-			nd_read_byte(&i.connected);
+			{
+				uint8_t connected;
+				nd_read_byte(&connected);
+				i.connected = player_connection_status{connected};
+			}
 			auto &pl_info = vmobjptr(i.objnum)->ctype.player_info;
 			if (Newdemo_game_mode & GM_MULTI_COOP) {
 				nd_read_int(&pl_info.mission.score);
@@ -3568,7 +3584,7 @@ window_event_result newdemo_goto_end(int to_rewrite)
 	if (to_rewrite)
 		return window_event_result::handled;
 
-	PHYSFSX_fseek(infile, loc, SEEK_SET);
+	PHYSFS_seek(infile, loc);
 	}
 	PHYSFSX_fseek(infile, -frame_length, SEEK_CUR);
 	nd_read_int(&nd_playback_v_framecount);            // get the frame count
@@ -3994,7 +4010,7 @@ static void newdemo_write_end()
 		range_for (auto &i, partial_const_range(Players, N_players)) {
 			nd_write_string(static_cast<const char *>(i.callsign));
 			byte_count += (strlen(static_cast<const char *>(i.callsign)) + 2);
-			nd_write_byte(i.connected);
+			nd_write_byte(underlying_value(i.connected));
 			auto &pl_info = vcobjptr(i.objnum)->ctype.player_info;
 			if (Game_mode & GM_MULTI_COOP) {
 				nd_write_int(pl_info.mission.score);
@@ -4018,7 +4034,7 @@ static void newdemo_write_end()
 
 static bool guess_demo_name(ntstring<PATH_MAX - 16> &filename)
 {
-	filename[0] = 0;
+	filename.front() = 0;
 	const auto &n = CGameArg.SysRecordDemoNameTemplate;
 	if (n.empty())
 		return false;
@@ -4095,7 +4111,7 @@ static bool guess_demo_name(ntstring<PATH_MAX - 16> &filename)
 		if (i >= sizeof(filename) - 1)
 			return false;
 	}
-	return filename[0];
+	return filename.front();
 }
 
 constexpr char demoname_allowed_chars[] = "azAZ09__--";
@@ -4127,19 +4143,19 @@ try_again:
 		std::array<newmenu_item, 1> m{{
 			newmenu_item::nm_item_input(filename, demoname_allowed_chars),
 		}};
-		exit = newmenu_do2(menu_title{nullptr}, menu_subtitle{TXT_SAVE_DEMO_AS}, m, unused_newmenu_subfunction, unused_newmenu_userdata);
+		exit = run_blocking_newmenu<newmenu>(menu_title{nullptr}, menu_subtitle{TXT_SAVE_DEMO_AS}, menu_filename{nullptr}, tiny_mode_flag::normal, tab_processing_flag::ignore, newmenu_layout::adjusted_citem::create(m, 0), grd_curscreen->sc_canvas);
 	} else if (nd_record_v_no_space == 2) {
 		std::array<newmenu_item, 2> m{{
 			newmenu_item::nm_item_text{TXT_DEMO_SAVE_NOSPACE},
 			newmenu_item::nm_item_input(filename, demoname_allowed_chars),
 		}};
-		exit = newmenu_do2(menu_title{nullptr}, menu_subtitle{nullptr}, m, unused_newmenu_subfunction, unused_newmenu_userdata);
+		exit = run_blocking_newmenu<newmenu>(menu_title{nullptr}, menu_subtitle{nullptr}, menu_filename{nullptr}, tiny_mode_flag::normal, tab_processing_flag::ignore, newmenu_layout::adjusted_citem::create(m, 0), grd_curscreen->sc_canvas);
 	}
 
 	if (exit == -2) {                   // got bumped out from network menu
 		char save_file[PATH_MAX];
 
-		if (filename[0] != '\0') {
+		if (filename.front() != '\0') {
 			snprintf(save_file, sizeof(save_file), DEMO_FORMAT_STRING("%s"), filename.data());
 		} else
 			snprintf(save_file, sizeof(save_file), DEMO_FORMAT_STRING("tmp%d"), tmpcnt++);
@@ -4152,7 +4168,7 @@ try_again:
 		return;                     // return without doing anything
 	}
 
-	if (filename[0]==0) //null string
+	if (!filename.front()) //null string
 		goto try_again;
 
 	//check to make sure name is ok
@@ -4349,12 +4365,10 @@ int newdemo_swap_endian(const char *filename)
 	infile.reset();
 	outfile.reset();
 
-	if (complete)
+	std::array<char, PATH_MAX> bakpath;
+	if (complete && change_filename_extension(bakpath, inpath, DEMO_BACKUP_EXT))
 	{
-		char bakpath[PATH_MAX+FILENAME_LEN];
-
-		change_filename_extension(bakpath, inpath, DEMO_BACKUP_EXT);
-		PHYSFSX_rename(inpath, bakpath);
+		PHYSFSX_rename(inpath, bakpath.data());
 		PHYSFSX_rename(DEMO_FILENAME, inpath);
 	}
 	else
@@ -4362,7 +4376,7 @@ int newdemo_swap_endian(const char *filename)
 
 read_error:
 	{
-		nm_messagebox(menu_title{nullptr}, 1, TXT_OK, complete ? "Demo %s converted%s" : "Error converting demo\n%s\n%s", filename,
+		nm_messagebox(menu_title{nullptr}, {TXT_OK}, complete ? "Demo %s converted%s" : "Error converting demo\n%s\n%s", filename,
 					  complete ? "" : (nd_playback_v_at_eof ? TXT_DEMO_CORRUPT : PHYSFS_getLastError()));
 	}
 

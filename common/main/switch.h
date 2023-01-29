@@ -110,11 +110,10 @@ struct v29_trigger : prohibit_void_ptr<v29_trigger>
 	sbyte   type;
 	short   flags;
 	fix     value;
-	fix     time;
 	sbyte   link_num;
 	short   num_links;
 	std::array<segnum_t, MAX_WALLS_PER_LINK>   seg;
-	std::array<short, MAX_WALLS_PER_LINK>   side;
+	std::array<sidenum_t, MAX_WALLS_PER_LINK>  side;
 };
 
 struct v30_trigger : prohibit_void_ptr<v30_trigger>
@@ -123,9 +122,8 @@ struct v30_trigger : prohibit_void_ptr<v30_trigger>
 	sbyte   num_links;
 	sbyte   pad;                        //keep alignment
 	fix     value;
-	fix     time;
 	std::array<segnum_t, MAX_WALLS_PER_LINK>   seg;
-	std::array<short, MAX_WALLS_PER_LINK>   side;
+	std::array<sidenum_t, MAX_WALLS_PER_LINK>   side;
 };
 #endif
 
@@ -202,7 +200,6 @@ struct d_level_unique_trigger_state
 
 constexpr std::integral_constant<trgnum_t, trgnum_t::None> trigger_none{};
 
-extern void trigger_init();
 namespace dsx {
 window_event_result check_trigger(vcsegptridx_t seg, sidenum_t side, object &plrobj, vcobjptridx_t objnum, int shot);
 window_event_result check_trigger_sub(object &, trgnum_t trigger_num, playernum_t player_num, unsigned shot);

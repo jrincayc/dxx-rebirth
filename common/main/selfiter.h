@@ -19,6 +19,21 @@ public:
 	using difference_type = std::ptrdiff_t;
 	using pointer = T *;
 	using reference = T &;
+	/* A default constructor must be declared to satisfy constraints from
+	 * std::ranges algorithms.  The declaration must be visible in an unrelated
+	 * context, so it is public here.  However, it must not be used in normal
+	 * operation.  self_return_iterator is used by valptridx iterators, which
+	 * do not offer default construction.  Therefore, the default constructor
+	 * is declared in order to satisfy the library's concept check, but never
+	 * implemented, since even the library's algorithms never default construct
+	 * an instance of self_return_iterator.
+	 *
+	 * std::sentinel_for ->
+	 * std::semiregular ->
+	 * std::default_initializable ->
+	 * requires { T{}; }
+	 */
+	self_return_iterator();
 	self_return_iterator(T &&i) :
 		T(std::move(i))
 	{
@@ -75,16 +90,16 @@ public:
 		this->T::operator++();
 		return result;
 	}
-	/* Since `T` is inherited privately, the base class `operator==` and
-	 * `operator!=` cannot implicitly convert `rhs` to `T`.  Define
-	 * comparison operators to perform the conversion explicitly.
-	 */
-	bool operator==(const self_return_iterator &rhs) const
+	self_return_iterator &operator--()
 	{
-		return this->T::operator==(static_cast<const T &>(rhs));
+		return static_cast<self_return_iterator &>(this->T::operator--());
 	}
-	bool operator!=(const self_return_iterator &rhs) const
+	/* Since `T` is inherited privately, the base class `operator==` cannot
+	 * implicitly convert `rhs` to `T`.  Explicitly cast to the base class,
+	 * then invoke the comparison operator to perform the conversion.
+	 */
+	constexpr bool operator==(const self_return_iterator &rhs) const
 	{
-		return this->T::operator!=(static_cast<const T &>(rhs));
+		return static_cast<const T &>(*this) == static_cast<const T &>(rhs);
 	}
 };

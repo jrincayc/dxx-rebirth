@@ -61,6 +61,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include "args.h"
 
 #include "compiler-range_for.h"
+#include "compiler-cf_assert.h"
 #include "d_levelstate.h"
 #include "d_enumerate.h"
 #include "d_range.h"
@@ -88,8 +89,6 @@ unsigned Max_linear_depth = 50; // Deepest segment at which linear interpolation
 int	Clear_window_color=-1;
 int	Clear_window=2;	// 1 = Clear whole background window, 2 = clear view portals into rest of world, 0 = no clear
 
-static uint16_t s_current_generation;
-
 // When any render function needs to know what's looking at it, it should 
 // access Viewer members.
 namespace dsx {
@@ -101,14 +100,12 @@ constexpr
 #endif
 fix Render_zoom = 0x9000;					//the player's zoom factor
 
+namespace {
+static uint16_t s_current_generation;
 #ifndef NDEBUG
 static std::bitset<MAX_OBJECTS> object_rendered;
 #endif
-
-#if DXX_USE_EDITOR
-int	Render_only_bottom=0;
-int	Bottom_bitmap_num = 9;
-#endif
+}
 
 namespace dcx {
 
@@ -118,12 +115,16 @@ int Window_clip_left,Window_clip_top,Window_clip_right,Window_clip_bot;
 }
 
 #if DXX_USE_EDITOR
+int	Render_only_bottom=0;
+int	Bottom_bitmap_num = 9;
 int _search_mode = 0;			//true if looking for curseg,side,face
 short _search_x,_search_y;	//pixel we're looking at
+namespace {
 static int found_face;
 static sidenum_t found_side;
 static segnum_t found_seg;
 static objnum_t found_obj;
+}
 #else
 constexpr int _search_mode = 0;
 #endif
@@ -140,18 +141,13 @@ int toggle_outline_mode(void)
 #endif
 
 #ifndef NDEBUG
-#if DXX_USE_OGL
-#define draw_outline(C,a,b)	draw_outline(a,b)
-#endif
 namespace {
-static void draw_outline(grs_canvas &canvas, const unsigned nverts, cg3s_point *const *const pointlist)
+static void draw_outline(const g3_draw_line_context &context, const unsigned nverts, cg3s_point *const *const pointlist)
 {
-	const uint8_t color = BM_XRGB(63, 63, 63);
-
 	const unsigned e = nverts - 1;
 	range_for (const unsigned i, xrange(e))
-		g3_draw_line(canvas, *pointlist[i], *pointlist[i + 1], color);
-	g3_draw_line(canvas, *pointlist[e], *pointlist[0], color);
+		g3_draw_line(context, *pointlist[i], *pointlist[i + 1]);
+	g3_draw_line(context, *pointlist[e], *pointlist[0]);
 }
 }
 #endif
@@ -196,7 +192,7 @@ void flash_frame()
 		flash_scale = fix_fastsin(flash_ang);
 		flash_scale = (flash_scale + f1_0)/2;
 #if defined(DXX_BUILD_DESCENT_II)
-		if (GameUniqueState.Difficulty_level == 0)
+		if (GameUniqueState.Difficulty_level == Difficulty_level_type::_0)
 			flash_scale = (flash_scale+F1_0*3)/4;
 #endif
 	}
@@ -262,14 +258,14 @@ static void render_face(grs_canvas &canvas, const shared_segment &segp, const si
 	grs_bitmap *bm2 = nullptr;
 	if (!CGameArg.DbgUseOldTextureMerge)
 	{
-		auto &texture1 = Textures[get_texture_index(tmap1)];
+		const auto texture1 = Textures[get_texture_index(tmap1)];
 		PIGGY_PAGE_IN(texture1);
-		bm = &GameBitmaps[texture1.index];
+		bm = &GameBitmaps[texture1];
 		if (tmap2 != texture2_value::None)
 		{
 			const auto texture2 = Textures[get_texture_index(tmap2)];
 			PIGGY_PAGE_IN(texture2);
-			bm2 = &GameBitmaps[texture2.index];
+			bm2 = &GameBitmaps[texture2];
 			if (bm2->get_flag_mask(BM_FLAG_SUPER_TRANSPARENT))
 			{
 				bm2 = nullptr;
@@ -283,8 +279,8 @@ static void render_face(grs_canvas &canvas, const shared_segment &segp, const si
 		{
 			bm = &texmerge_get_cached_bitmap( tmap1, tmap2 );
 		} else {
-			auto &texture1 = Textures[get_texture_index(tmap1)];
-			bm = &GameBitmaps[texture1.index];
+			const auto texture1 = Textures[get_texture_index(tmap1)];
+			bm = &GameBitmaps[texture1];
 			PIGGY_PAGE_IN(texture1);
 		}
 
@@ -355,8 +351,8 @@ static void render_face(grs_canvas &canvas, const shared_segment &segp, const si
 	}
 
 #if DXX_USE_EDITOR
-	if ((Render_only_bottom) && (sidenum == WBOTTOM))
-		g3_draw_tmap(canvas, nv, pointlist, uvl_copy, dyn_light, GameBitmaps[Textures[Bottom_bitmap_num].index]);
+	if (Render_only_bottom && sidenum == sidenum_t::WBOTTOM)
+		g3_draw_tmap(canvas, nv, pointlist, uvl_copy, dyn_light, GameBitmaps[Textures[Bottom_bitmap_num]]);
 	else
 #endif
 
@@ -371,7 +367,12 @@ static void render_face(grs_canvas &canvas, const shared_segment &segp, const si
 		gr_settransblend(canvas, GR_FADE_OFF, gr_blend::normal); // revert any transparency / blending setting back to normal
 
 #ifndef NDEBUG
-	if (Outline_mode) draw_outline(canvas, nv, &pointlist[0]);
+	if (Outline_mode)
+	{
+		const uint8_t color = BM_XRGB(63, 63, 63);
+		g3_draw_line_context context{canvas, color};
+		draw_outline(context, nv, &pointlist[0]);
+	}
 #endif
 }
 }
@@ -758,7 +759,7 @@ static void project_list(const std::array<vertnum_t, 8> &pointnumlist)
 	range_for (const auto pnum, pointnumlist)
 	{
 		auto &p = Segment_points[pnum];
-		if (!(p.p3_flags & PF_PROJECTED))
+		if (!(p.p3_flags & projection_flag::projected))
 			g3_project_point(p);
 	}
 }
@@ -771,7 +772,7 @@ namespace dsx {
 namespace {
 static void render_segment(fvcvertptr &vcvertptr, fvcwallptr &vcwallptr, const vms_vector &Viewer_eye, grs_canvas &canvas, const vcsegptridx_t seg)
 {
-	if (!rotate_list(vcvertptr, seg->verts).uand)
+	if (rotate_list(vcvertptr, seg->verts).uand == clipping_code::None)
 	{		//all off screen?
 
 #if defined(DXX_BUILD_DESCENT_II)
@@ -808,13 +809,13 @@ static void outline_seg_side(grs_canvas &canvas, const shared_segment &seg, cons
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
 	auto &Vertices = LevelSharedVertexState.get_vertices();
 	auto &vcvertptr = Vertices.vcptr;
-	if (!rotate_list(vcvertptr, verts).uand)
+	if (rotate_list(vcvertptr, verts).uand == clipping_code::None)
 	{		//all off screen?
 		//render curedge of curside of curseg in green
 
 		const uint8_t color = BM_XRGB(0, 63, 0);
 		auto &sv = Side_to_verts[_side];
-		g3_draw_line(canvas, Segment_points[verts[sv[edge]]], Segment_points[verts[sv[next_side_vertex(edge)]]], color);
+		g3_draw_line(g3_draw_line_context{canvas, color}, Segment_points[verts[sv[edge]]], Segment_points[verts[sv[next_side_vertex(edge)]]]);
 
 		//draw a little cross at the current vert
 
@@ -840,15 +841,18 @@ namespace dcx {
 
 namespace {
 
-static ubyte code_window_point(fix x,fix y,const rect &w)
+static clipping_code code_window_point(const fix x, const fix y, const rect &w)
 {
-	ubyte code=0;
+	clipping_code code{};
+	if (x <= w.left)
+		code |= clipping_code::off_left;
+	if (x >= w.right)
+		code |= clipping_code::off_right;
 
-	if (x <= w.left)  code |= 1;
-	if (x >= w.right) code |= 2;
-
-	if (y <= w.top) code |= 4;
-	if (y >= w.bot) code |= 8;
+	if (y <= w.top)
+		code |= clipping_code::off_top;
+	if (y >= w.bot)
+		code |= clipping_code::off_bot;
 
 	return code;
 }
@@ -917,17 +921,17 @@ namespace {
 //given an edge specified by two verts, give the two sides on that edge
 constexpr std::array<
 	std::array<
-		std::array<int_fast8_t, 2>,
+		std::array<sidenum_t, 2>,
 		8>,
 	8> Edge_to_sides = {{
-	{{  {{side_none,side_none}},	 {{2,5}},	 {{side_none,side_none}},	 {{1,5}},	 {{1,2}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}}	}},
-	{{  {{2,5}},	 {{side_none,side_none}},	 {{3,5}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{2,3}},	 {{side_none,side_none}},	 {{side_none,side_none}}	}},
-	{{  {{side_none,side_none}},	 {{3,5}},	 {{side_none,side_none}},	 {{0,5}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{0,3}},	 {{side_none,side_none}}	}},
-	{{  {{1,5}},	 {{side_none,side_none}},	 {{0,5}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{0,1}}	}},
-	{{  {{1,2}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{2,4}},	 {{side_none,side_none}},	 {{1,4}}	}},
-	{{  {{side_none,side_none}},	 {{2,3}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{2,4}},	 {{side_none,side_none}},	 {{3,4}},	 {{side_none,side_none}}	}},
-	{{  {{side_none,side_none}},	 {{side_none,side_none}},	 {{0,3}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{3,4}},	 {{side_none,side_none}},	 {{0,4}}	}},
-	{{  {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{0,1}},	 {{1,4}},	 {{side_none,side_none}},	 {{0,4}},	 {{side_none,side_none}}	}},
+	{{  {{side_none,side_none}},	 {{sidenum_t::WRIGHT,sidenum_t::WFRONT}},	 {{side_none,side_none}},	 {{sidenum_t::WTOP,sidenum_t::WFRONT}},	 {{sidenum_t::WTOP,sidenum_t::WRIGHT}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}}	}},
+	{{  {{sidenum_t::WRIGHT,sidenum_t::WFRONT}},	 {{side_none,side_none}},	 {{sidenum_t::WBOTTOM,sidenum_t::WFRONT}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{sidenum_t::WRIGHT,sidenum_t::WBOTTOM}},	 {{side_none,side_none}},	 {{side_none,side_none}}	}},
+	{{  {{side_none,side_none}},	 {{sidenum_t::WBOTTOM,sidenum_t::WFRONT}},	 {{side_none,side_none}},	 {{sidenum_t::WLEFT,sidenum_t::WFRONT}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{sidenum_t::WLEFT,sidenum_t::WBOTTOM}},	 {{side_none,side_none}}	}},
+	{{  {{sidenum_t::WTOP,sidenum_t::WFRONT}},	 {{side_none,side_none}},	 {{sidenum_t::WLEFT,sidenum_t::WFRONT}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{sidenum_t::WLEFT,sidenum_t::WTOP}}	}},
+	{{  {{sidenum_t::WTOP,sidenum_t::WRIGHT}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{sidenum_t::WRIGHT,sidenum_t::WBACK}},	 {{side_none,side_none}},	 {{sidenum_t::WTOP,sidenum_t::WBACK}}	}},
+	{{  {{side_none,side_none}},	 {{sidenum_t::WRIGHT,sidenum_t::WBOTTOM}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{sidenum_t::WRIGHT,sidenum_t::WBACK}},	 {{side_none,side_none}},	 {{sidenum_t::WBOTTOM,sidenum_t::WBACK}},	 {{side_none,side_none}}	}},
+	{{  {{side_none,side_none}},	 {{side_none,side_none}},	 {{sidenum_t::WLEFT,sidenum_t::WBOTTOM}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{sidenum_t::WBOTTOM,sidenum_t::WBACK}},	 {{side_none,side_none}},	 {{sidenum_t::WLEFT,sidenum_t::WBACK}}	}},
+	{{  {{side_none,side_none}},	 {{side_none,side_none}},	 {{side_none,side_none}},	 {{sidenum_t::WLEFT,sidenum_t::WTOP}},	 {{sidenum_t::WTOP,sidenum_t::WBACK}},	 {{side_none,side_none}},	 {{sidenum_t::WLEFT,sidenum_t::WBACK}},	 {{side_none,side_none}}	}},
 }};
 
 //@@//perform simple check on tables
@@ -948,14 +952,9 @@ constexpr std::array<
 //@@
 //@@}
 
-}
-
 //given an edge, tell what side is on that edge
-static std::optional<sidenum_t> find_seg_side(const shared_segment &seg, const std::array<vertnum_t, 2> &verts, const unsigned notside)
+static std::optional<sidenum_t> find_seg_side(const shared_segment &seg, const std::array<vertnum_t, 2> &verts, const sidenum_t notside)
 {
-	if (notside >= MAX_SIDES_PER_SEGMENT)
-		throw std::logic_error("invalid notside");
-
 	const auto v0 = verts[0];
 	const auto v1 = verts[1];
 
@@ -1041,8 +1040,8 @@ static bool compare_children(fvcvertptr &vcvertptr, const vms_vector &Viewer_eye
 
 //short the children of segment to render in the correct order
 //returns non-zero if swaps were made
-using sort_child_array_t = std::array<sidenum_t, MAX_SIDES_PER_SEGMENT>;
-static void sort_seg_children(fvcvertptr &vcvertptr, const vms_vector &Viewer_eye, const vcsegptridx_t seg, const partial_range_t<sort_child_array_t::iterator> &r)
+using sort_child_array_t = per_side_array<sidenum_t>;
+static void sort_seg_children(fvcvertptr &vcvertptr, const vms_vector &Viewer_eye, const vcsegptridx_t seg, const ranges::subrange<sort_child_array_t::iterator> &r)
 {
 	//for each child,  compare with other children and see if order matters
 	//if order matters, fix if wrong
@@ -1098,11 +1097,13 @@ public:
 //compare function for object sort. 
 bool render_compare_context_t::operator()(const distant_object &a, const distant_object &b) const
 {
-	const auto delta_dist_squared = (*this)[a.objnum].dist_squared - (*this)[b.objnum].dist_squared;
+	auto &doa = operator[](a.objnum);
+	auto &dob = operator[](b.objnum);
+	const auto delta_dist_squared = doa.dist_squared - dob.dist_squared;
 
 #if defined(DXX_BUILD_DESCENT_II)
-	const auto obj_a = (*this)[a.objnum].objp;
-	const auto obj_b = (*this)[b.objnum].objp;
+	const auto obj_a = doa.objp;
+	const auto obj_b = dob.objp;
 
 	auto abs_delta_dist_squared = std::abs(delta_dist_squared);
 	fix combined_size = obj_a->size + obj_b->size;
@@ -1140,6 +1141,8 @@ static void sort_segment_object_list(fvcobjptr &vcobjptr, const vms_vector &View
 	render_compare_context_t context(vcobjptr, Viewer_eye, segstate);
 	auto &v = segstate.objects;
 	std::sort(v.begin(), v.end(), std::cref(context));
+}
+
 }
 
 }
@@ -1187,12 +1190,11 @@ static void build_object_lists(object_array &Objects, fvcsegptr &vcsegptr, const
 #if defined(DXX_BUILD_DESCENT_I)
 					did_migrate = 0;
 #endif
-					const uint_fast32_t sidemask = get_seg_masks(vcvertptr, obj->pos, vcsegptr(new_segnum), obj->size).sidemask;
-	
-					if (sidemask) {
+					if (const auto sidemask = get_seg_masks(vcvertptr, obj->pos, vcsegptr(new_segnum), obj->size).sidemask; sidemask != sidemask_t{})
+					{
 						for (const auto sn : MAX_SIDES_PER_SEGMENT)
 						{
-							const auto sf = 1 << sn;
+							const auto sf = build_sidemask(sn);
 							if (sidemask & sf)
 							{
 #if defined(DXX_BUILD_DESCENT_I)
@@ -1220,7 +1222,6 @@ static void build_object_lists(object_array &Objects, fvcsegptr &vcsegptr, const
 							}
 						}
 					}
-	
 				} while (did_migrate);
 				add_obj_to_seglist(rstate, obj, new_segnum);
 			}
@@ -1265,10 +1266,12 @@ void render_frame(grs_canvas &canvas, fix eye_offset, window_rendered_data &wind
   
 	g3_start_frame(canvas);
 
+#if DXX_USE_STEREOSCOPIC_RENDER
 #if DXX_USE_OGL
 	// select stereo viewport/transform/buffer per left/right eye
 	if (VR_stereo != StereoFormat::None && eye_offset)
 		ogl_stereo_frame(eye_offset < 0, VR_eye_offset);
+#endif
 #endif
 
 	auto Viewer_eye = Viewer->pos;
@@ -1370,33 +1373,44 @@ static void build_segment_list(render_state_t &rstate, const vms_vector &Viewer_
 			processed = true;
 
 			const auto &&seg = vcsegptridx(segnum);
-			const auto uor = rotate_list(vcvertptr, seg->verts).uor & CC_BEHIND;
+			const auto uor = rotate_list(vcvertptr, seg->verts).uor & clipping_code::behind;
 
 			//look at all sides of this segment.
 			//tricky code to look at sides in correct order follows
 
 			sort_child_array_t child_list;		//list of ordered sides to process
-			uint_fast32_t n_children = 0;							//how many sides in child_list
+			const auto child_begin = child_list.begin();
+			auto child_iter = child_begin;
 			for (const auto &&[c, sv] : enumerate(Side_to_verts))
 			{		//build list of sides
 				const auto wid = WALL_IS_DOORWAY(GameBitmaps, Textures, vcwallptr, seg, c);
 				if (wid & WALL_IS_DOORWAY_FLAG::rendpast)
 				{
-					if (auto codes_and = uor)
+					if (uor != clipping_code::None)
 					{
+						auto codes_and = uor;
 						range_for (const auto i, sv)
 							codes_and &= Segment_points[seg->verts[i]].p3_codes;
-						if (codes_and)
+						if (codes_and != clipping_code::None)
 							continue;
 					}
-					child_list[n_children++] = static_cast<sidenum_t>(c);
+					*child_iter++ = c;
 				}
 			}
-			if (!n_children)
+			if (child_iter == child_begin)
 				continue;
+			/* The preceding loop will write at most one element per iteration,
+			 * and iterates at most std::size(Side_to_verts) steps.  Therefore,
+			 * it advances `child_iter` by at most `std::size(Side_to_verts)`
+			 * steps.  gcc-12 warns in `sort_seg_children` when `std::sort`
+			 * computes `begin + 16`, which exceeds `begin + size()`.  This
+			 * control-flow assertion encourages it to prune the bad path
+			 * before warning about it.
+			 */
+			cf_assert(std::distance(child_begin, child_iter) <= std::size(Side_to_verts));
 
 			//now order the sides in some magical way
-			const auto &&child_range = partial_range(child_list, n_children);
+			const auto &&child_range = ranges::subrange(child_begin, child_iter);
 			sort_seg_children(vcvertptr, Viewer_eye, seg, child_range);
 			project_list(seg->verts);
 			range_for (const auto siden, child_range)
@@ -1406,12 +1420,13 @@ static void build_segment_list(render_state_t &rstate, const vms_vector &Viewer_
 					{
 						short min_x=32767,max_x=-32767,min_y=32767,max_y=-32767;
 						int no_proj_flag=0;	//a point wasn't projected
-						uint8_t codes_and_3d = 0xff, codes_and_2d = codes_and_3d;
+						clipping_code codes_and_3d{0xff};
+						auto codes_and_2d = codes_and_3d;
 						range_for (const auto i, Side_to_verts[siden])
 						{
 							g3s_point *pnt = &Segment_points[seg->verts[i]];
 
-							if (! (pnt->p3_flags&PF_PROJECTED)) {no_proj_flag=1; break;}
+							if (! (pnt->p3_flags&projection_flag::projected)) {no_proj_flag=1; break;}
 
 							const int16_t _x = f2i(pnt->p3_sx), _y = f2i(pnt->p3_sy);
 
@@ -1423,7 +1438,7 @@ static void build_segment_list(render_state_t &rstate, const vms_vector &Viewer_
 							codes_and_3d &= pnt->p3_codes;
 							codes_and_2d &= code_window_point(_x,_y,check_w);
 						}
-						if (no_proj_flag || (!codes_and_3d && !codes_and_2d)) {	//maybe add this segment
+						if (no_proj_flag || (codes_and_3d == clipping_code::None && codes_and_2d == clipping_code::None)) {	//maybe add this segment
 							auto rp = rstate.render_pos[ch];
 							rect nw;
 
@@ -1540,7 +1555,7 @@ void render_mine(grs_canvas &canvas, const vms_vector &Viewer_eye, const vcsegid
 		build_object_lists(Objects, vcsegptr, Viewer_eye, rstate);
 
 	if (eye_offset<=0) // Do for left eye or zero.
-		set_dynamic_light(rstate);
+		set_dynamic_light(LevelSharedRobotInfoState.Robot_info, rstate);
 
 	if (reversed_render_range.empty())
 		/* Impossible, but later code has undefined behavior if this
@@ -1640,7 +1655,7 @@ void render_mine(grs_canvas &canvas, const vms_vector &Viewer_eye, const vcsegid
 			{
 				const auto &&seg = vcsegptridx(segnum);
 				Assert(segnum!=segment_none && segnum<=Highest_segment_index);
-				if (!rotate_list(vcvertptr, seg->verts).uand)
+				if (rotate_list(vcvertptr, seg->verts).uand == clipping_code::None)
 				{		//all off screen?
 
 					if (Viewer->type!=OBJ_ROBOT)
@@ -1689,7 +1704,7 @@ void render_mine(grs_canvas &canvas, const vms_vector &Viewer_eye, const vcsegid
 			{
 				const auto &&seg = vcsegptridx(segnum);
 				Assert(segnum!=segment_none && segnum<=Highest_segment_index);
-				if (!rotate_list(vcvertptr, seg->verts).uand)
+				if (rotate_list(vcvertptr, seg->verts).uand == clipping_code::None)
 				{		//all off screen?
 
 					if (Viewer->type!=OBJ_ROBOT)

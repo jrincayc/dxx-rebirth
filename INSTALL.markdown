@@ -8,14 +8,15 @@ The DXX-Rebirth maintainers have no control over the sites linked below.  The ma
 ### Prerequisites
 
 * [Python 3.x](https://www.python.org/) to run [scons](https://www.scons.org/), the processor for SConstruct scripts.
-[Python 3.6](https://www.python.org/downloads/release/python-3610/) is recommended.
-* C++ compiler with support for selected C++11 features.  One of:
-    * [gcc](https://gcc.gnu.org/) 7.5
-    * [clang](https://clang.llvm.org/) 9.0 or later
+[Python 3.9](https://www.python.org/downloads/release/python-3912/) is recommended.
+* C++ compiler with support for selected C++20 features.  One of:
+    * [gcc](https://gcc.gnu.org/) 10.3
+    * [clang](https://clang.llvm.org/) 14.0 or later
     * Microsoft Visual Studio is **not** supported at this time.
-	  Support for Microsoft Visual Studio will be added when it
-	  implements sufficient C++17 features for the code to build with
-	  few or no modifications.
+	  Visual Studio 2022 release notes indicate it has sufficient C++ support
+	  that it should be able to compile Rebirth.  However, due to limitations
+	  of the Visual Studio installation environment, the core team does not
+	  use, test, or support Visual Studio.
 * [SDL 1.2](https://www.libsdl.org/).
 SDL 2 is also supported, and will become the default soon.
 * [PhysicsFS](https://icculus.org/physfs/).
@@ -26,11 +27,8 @@ Optional, but recommended:
 * [SDL\_image 1.2](https://www.libsdl.org/projects/SDL_image/).
 * [SDL\_mixer 1.2](https://www.libsdl.org/projects/SDL_mixer/).
 * [libpng](http://www.libpng.org/).
-* C++ compiler with support for selected C++14 features.  One of:
-    * [gcc](https://gcc.gnu.org/) 9.2.0 or later
-    * [clang](https://clang.llvm.org/) 9.0 or later
 
-Unless otherwise noted, using the newest release available is recommended.  For example, prefer gcc-9.3 to gcc-7.5, even though both should work.
+Unless otherwise noted, using the newest release available is recommended.  For example, prefer gcc-11.3 to gcc-10.4, even though both should work.
 
 DXX-Rebirth can be built on one system to run on a different system, such as using Linux to build for Windows (a "cross-compiled build").  The sections below specify where to get prerequisites for a build meant to run on the system where it is built (a "native build").
 
@@ -53,9 +51,9 @@ Where possible, Windows users should try to obtain a compiled package, rather th
 
 If you are not sure whether your system is Windows x86 or Windows x64, use the packages for Windows x86.  Systems running Windows x64 support running Windows x86 programs, but Windows x86 systems do not run Windows x64 programs.
 
-* [Python x86 installer](https://www.python.org/ftp/python/3.6.7/python-3.6.7.exe) |
-[Python x64 installer](https://www.python.org/ftp/python/3.6.7/python-3.6.7-amd64.exe)
-* [SCons](http://prdownloads.sourceforge.net/scons/scons-3.1.1.zip)
+* [Python x86 installer](https://www.python.org/ftp/python/3.9.12/python-3.9.12.exe) |
+[Python x64 installer](https://www.python.org/ftp/python/3.9.12/python-3.9.12-amd64.exe)
+* [SCons](http://prdownloads.sourceforge.net/scons/scons-4.2.0.zip)
 * C++ compiler
     * mingw-gcc: [Getting Started](http://www.mingw.org/wiki/Getting_Started) |
 	[Direct download](https://sourceforge.net/projects/mingw/files/latest/download)
@@ -128,16 +126,14 @@ from the Terminal.  This may need to be done after each major OS upgrade as well
 
 DXX-Rebirth can be built from the Terminal (via SCons) without Xcode; to build using Xcode requires Xcode to be installed.
 
+When building for Mac OS X, only SDL 2 is currently supported, as SDL 1.2 has long-standing issues with modern versions of the operating system.  Terminal builds for Mac OS X default to SDL 2, which is equivalent to passing **sdl2=True** as a parameter to the SCons command.
+
 ##### [Homebrew](https://github.com/Homebrew/homebrew/)
-* **brew install
- scons
- sdl
- sdl\_image
- sdl\_mixer
- physfs
- libpng
- pkg-config
- dylibbundler**
+The project includes a Brewfile for installing all required dependencies, if you use Homebrew.  You can install them with:
+
+* **brew bundle**
+
+**Note:** Because Homebrew only installs libraries and not frameworks, when building for Mac OS X with Homebrew-provided dependencies, you must provide **macos_add_frameworks=False** as a SCons command parameter in order for the build system to look for libraries rather than frameworks.
 
 ### Building
 Once prerequisites are installed, run **scons** *options* to build.  By default, both D1X-Rebirth and D2X-Rebirth are built.  To build only D1X-Rebirth, run **scons d1x=1**.  To build only D2X-Rebirth, run **scons d2x=1**.
@@ -161,28 +157,28 @@ Packaging scripts should use **builddir** with manually chosen directories.
 
 The build system supports building multiple targets in parallel.  This is primarily useful for developers, but can also be used by packagers to create secondary builds with different features enabled.  To use it, run **scons** *game*=*profile[,profile...]*.  **SConstruct** will search each profile for the known options.  The first match wins.  For example:
 
-        scons dxx=gcc8,e, d2x=gcc7,sdl2, \
-            gcc7_CXX=/path/to/gcc-7 \
-            gcc8_CXX=/path/to/gcc-8 \
+        scons dxx=gcc10,e, d2x=gcc11,sdl2, \
+            gcc10_CXX=/path/to/gcc-10 \
+            gcc11_CXX=/path/to/gcc-11 \
             e_editor=1 sdl2_sdl2=1
 
-This tells **SConstruct** to build both games (**dxx**) with the profiles **gcc8**, **e**, *empty* and also to build D2X-Rebirth (**d2x**) with the profiles **gcc7**, **sdl2**, *empty*.  Profiles **gcc7** and **gcc8** define private values for **CXX**, so the default value of **CXX** is ignored.  Profile **e** enables the **editor** option, which builds features used by players who want to create their own levels.  Profile **sdl2** sets the **sdl2** option to true, which produces a build that uses libSDL2 instead of libSDL.  Profile *empty* is the default namespace, so CPPFLAGS, CXXFLAGS, etc. are found when it is searched.  Since these values were not assigned, they are drawn from the corresponding environment variables.
+This tells **SConstruct** to build both games (**dxx**) with the profiles **gcc10**, **e**, *empty* and also to build D2X-Rebirth (**d2x**) with the profiles **gcc11**, **sdl2**, *empty*.  Profiles **gcc10** and **gcc11** define private values for **CXX**, so the default value of **CXX** is ignored.  Profile **e** enables the **editor** option, which builds features used by players who want to create their own levels.  Profile **sdl2** sets the **sdl2** option to true, which produces a build that uses libSDL2 instead of libSDL.  Profile *empty* is the default namespace, so CPPFLAGS, CXXFLAGS, etc. are found when it is searched.  Since these values were not assigned, they are drawn from the corresponding environment variables.
 
 The build system supports specifying a group of closely related targets.  This is mostly redundant on shells with brace expansion support, but can be easier to type.  For example:
 
         scons builddir_prefix=build/ \
-			dxx=gcc8+gcc9,prof1,prof2,prof3,
+			dxx=gcc10+gcc11,prof1,prof2,prof3,
 
 This is equivalent to the shell brace expansion:
 
         scons builddir_prefix=build/ \
-			dxx={gcc8,gcc9},prof1,prof2,prof3,
+			dxx={gcc10,gcc11},prof1,prof2,prof3,
 
 or
 
         scons builddir_prefix=build/ \
-			dxx=gcc8,prof1,prof2,prof3, \
-			dxx=gcc9,prof1,prof2,prof3,
+			dxx=gcc10,prof1,prof2,prof3, \
+			dxx=gcc11,prof1,prof2,prof3,
 
 Profile addition can be stacked: **scons dxx=a+b,c+d,e+f** is equivalent to **scons dxx=a,c,e dxx=a,d,e dxx=b,c,e dxx=b,d,e dxx=a,c,f dxx=a,d,f dxx=b,c,f dxx=b,d,f**.
 

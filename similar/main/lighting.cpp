@@ -58,6 +58,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 
 #include "compiler-range_for.h"
 #include "d_bitset.h"
+#include "d_enumerate.h"
 #include "d_levelstate.h"
 #include "partial_range.h"
 #include "d_range.h"
@@ -163,22 +164,19 @@ static void apply_light(fvmsegptridx &vmsegptridx, const g3s_lrgb obj_light_emis
 						headlight_shift = 3;
 						if (get_player_id(obj) != Player_num)
 						{
-							fvi_query	fq;
 							fvi_info		hit_data;
-							int			fate;
 
 							const auto tvec = vm_vec_scale_add(obj.pos, obj.orient.fvec, F1_0*200);
-
-							fq.startseg				= obj_seg;
-							fq.p0						= &obj.pos;
-							fq.p1						= &tvec;
-							fq.rad					= 0;
-							fq.thisobjnum			= objnum;
-							fq.ignore_obj_list.first = nullptr;
-							fq.flags					= FQ_TRANSWALL;
-
-							fate = find_vector_intersection(fq, hit_data);
-							if (fate != HIT_NONE)
+							const auto fate = find_vector_intersection(fvi_query{
+								obj.pos,
+								tvec,
+								fvi_query::unused_ignore_obj_list,
+								fvi_query::unused_LevelUniqueObjectState,
+								fvi_query::unused_Robot_info,
+								FQ_TRANSWALL,
+								objnum,
+							}, obj_seg, 0, hit_data);
+							if (fate != fvi_hit_type::None)
 								max_headlight_dist = vm_vec_mag_quick(vm_vec_sub(hit_data.hit_pnt, obj.pos)) + F1_0*4;
 						}
 					}
@@ -280,7 +278,7 @@ const std::array<fix, 16> Obj_light_xlate{{0x1234, 0x3321, 0x2468, 0x1735,
 }};
 #if defined(DXX_BUILD_DESCENT_I)
 #define compute_player_light_emission_intensity(LevelUniqueHeadlightState, obj)	compute_player_light_emission_intensity(obj)
-#define compute_light_emission(LevelSharedRobotInfoState, LevelUniqueHeadlightState, Vclip, obj)	compute_light_emission(Vclip, obj)
+#define compute_light_emission(Robot_info, LevelUniqueHeadlightState, Vclip, obj)	compute_light_emission(Vclip, obj)
 #elif defined(DXX_BUILD_DESCENT_II)
 #undef compute_player_light_emission_intensity
 #undef compute_light_emission
@@ -314,13 +312,83 @@ static fix compute_player_light_emission_intensity(d_level_unique_headlight_stat
 }
 #endif
 
-static g3s_lrgb compute_light_emission(const d_level_shared_robot_info_state &LevelSharedRobotInfoState, d_level_unique_headlight_state &LevelUniqueHeadlightState, const d_vclip_array &Vclip, const vcobjptridx_t obj)
+static g3s_lrgb build_object_color_from_bitmap(GameBitmaps_array &GameBitmaps, const bitmap_index i, grs_bitmap &bm)
+{
+	if (bm.get_flag_mask(BM_FLAG_PAGED_OUT))
+		piggy_bitmap_page_in(GameBitmaps, i);
+	return g3s_lrgb{
+		.r = bm.avg_color_rgb[0],
+		.g = bm.avg_color_rgb[1],
+		.b = bm.avg_color_rgb[2],
+	};
+}
+
+static g3s_lrgb build_object_color_from_range(GameBitmaps_array &GameBitmaps, const bitmap_index index_begin, const bitmap_index index_end)
+{
+	g3s_lrgb obj_color{};
+	for (auto &&[i, bm] : enumerate(partial_range(GameBitmaps, underlying_value(index_begin), underlying_value(index_end))))
+	{
+		const auto r = build_object_color_from_bitmap(GameBitmaps, i, bm);
+		obj_color.r += r.r;
+		obj_color.g += r.g;
+		obj_color.b += r.b;
+	}
+	return obj_color;
+}
+
+static g3s_lrgb build_object_color_from_vclip(GameBitmaps_array &GameBitmaps, const d_vclip_array &Vclip, const std::size_t id)
+{
+	auto &v = Vclip[id];
+	auto &f = v.frames;
+	const auto t_idx_s = f[0];
+	const auto t_idx_e = f[v.num_frames - 1];
+	return build_object_color_from_range(GameBitmaps, t_idx_s, t_idx_e);
+}
+
+static g3s_lrgb build_object_color(GameBitmaps_array &GameBitmaps, const object_base &objp)
+{
+	switch (objp.render_type)
+	{
+		case RT_POLYOBJ:
+		{
+			auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
+			const polymodel *const po = &Polygon_models[objp.rtype.pobj_info.model_num];
+			if (const auto n_textures = po->n_textures; n_textures > 0)
+			{
+				const bitmap_index t_idx_s = ObjBitmaps[ObjBitmapPtrs[po->first_texture]];
+				const bitmap_index t_idx_e{static_cast<uint16_t>(underlying_value(t_idx_s) + n_textures)};
+				return build_object_color_from_range(GameBitmaps, t_idx_s, t_idx_e);
+			}
+			/* If no texture, try to get a general polygon color */
+			if (const auto color = g3_poly_get_color(po->model_data.get()))
+			{
+				auto &rgb = gr_current_pal[color];
+				return {rgb.r, rgb.g, rgb.b};
+			}
+			/* If no color either, fall through and use a generic value */
+		}
+		[[fallthrough]];
+		case RT_NONE:
+			// no object - no light
+			return {255, 255, 255};
+		case RT_LASER:
+		{
+			const bitmap_index t_idx_s = Weapon_info[get_weapon_id(objp)].bitmap;
+			return build_object_color_from_bitmap(GameBitmaps, t_idx_s, GameBitmaps[t_idx_s]);
+		}
+		case RT_POWERUP:
+			return build_object_color_from_vclip(GameBitmaps, Vclip, objp.rtype.vclip_info.vclip_num);
+		case RT_WEAPON_VCLIP:
+			return build_object_color_from_vclip(GameBitmaps, Vclip, Weapon_info[get_weapon_id(objp)].weapon_vclip);
+		default:
+			return build_object_color_from_vclip(GameBitmaps, Vclip, objp.id);
+	}
+}
+
+static g3s_lrgb compute_light_emission(const d_robot_info_array &Robot_info, d_level_unique_headlight_state &LevelUniqueHeadlightState, const d_vclip_array &Vclip, const vcobjptridx_t obj)
 {
 	int compute_color = 0;
 	fix light_intensity = 0;
-#if defined(DXX_BUILD_DESCENT_II)
-	auto &Robot_info = LevelSharedRobotInfoState.Robot_info;
-#endif
 	const object &objp = obj;
 	switch (objp.type)
 	{
@@ -417,83 +485,10 @@ static g3s_lrgb compute_light_emission(const d_level_shared_robot_info_state &Le
 
 	if (compute_color)
 	{
-		int t_idx_s = -1, t_idx_e = -1;
-
 		if (light_intensity < F1_0) // for every effect we want color, increase light_intensity so the effect becomes barely visible
 			light_intensity = F1_0;
 
-		g3s_lrgb obj_color = { 255, 255, 255 };
-
-		switch (objp.render_type)
-		{
-			case RT_NONE:
-				break; // no object - no light
-			case RT_POLYOBJ:
-			{
-				auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
-				const polymodel *const po = &Polygon_models[objp.rtype.pobj_info.model_num];
-				if (po->n_textures <= 0)
-				{
-					int color = g3_poly_get_color(po->model_data.get());
-					if (color)
-					{
-						obj_color.r = gr_current_pal[color].r;
-						obj_color.g = gr_current_pal[color].g;
-						obj_color.b = gr_current_pal[color].b;
-					}
-				}
-				else
-				{
-					t_idx_s = ObjBitmaps[ObjBitmapPtrs[po->first_texture]].index;
-					t_idx_e = t_idx_s + po->n_textures - 1;
-				}
-				break;
-			}
-			case RT_LASER:
-			{
-				t_idx_s = t_idx_e = Weapon_info[get_weapon_id(objp)].bitmap.index;
-				break;
-			}
-			case RT_POWERUP:
-			{
-				auto &v = Vclip[objp.rtype.vclip_info.vclip_num];
-				auto &f = v.frames;
-				t_idx_s = f[0].index;
-				t_idx_e = f[v.num_frames - 1].index;
-				break;
-			}
-			case RT_WEAPON_VCLIP:
-			{
-				auto &v = Vclip[Weapon_info[get_weapon_id(objp)].weapon_vclip];
-				auto &f = v.frames;
-				t_idx_s = f[0].index;
-				t_idx_e = f[v.num_frames - 1].index;
-				break;
-			}
-			default:
-			{
-				const auto &vc = Vclip[objp.id];
-				t_idx_s = vc.frames[0].index;
-				t_idx_e = vc.frames[vc.num_frames-1].index;
-				break;
-			}
-		}
-
-		if (t_idx_s != -1 && t_idx_e != -1)
-		{
-			obj_color.r = obj_color.g = obj_color.b = 0;
-			range_for (const int i, xrange(t_idx_s, t_idx_e + 1))
-			{
-				grs_bitmap *bm = &GameBitmaps[i];
-				bitmap_index bi;
-				bi.index = i;
-				PIGGY_PAGE_IN(bi);
-				obj_color.r += bm->avg_color_rgb[0];
-				obj_color.g += bm->avg_color_rgb[1];
-				obj_color.b += bm->avg_color_rgb[2];
-			}
-		}
-
+		const auto &&obj_color = build_object_color(GameBitmaps, objp);
 		const fix rgbsum = obj_color.r + obj_color.g + obj_color.b;
 		// obviously this object did not give us any usable color. so let's do our own but with blackjack and hookers!
 		if (rgbsum <= 0)
@@ -513,7 +508,7 @@ static g3s_lrgb compute_light_emission(const d_level_shared_robot_info_state &Le
 }
 
 // ----------------------------------------------------------------------------------------------
-void set_dynamic_light(render_state_t &rstate)
+void set_dynamic_light(const d_robot_info_array &Robot_info, render_state_t &rstate)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vcobjptridx = Objects.vcptridx;
@@ -564,7 +559,7 @@ void set_dynamic_light(render_state_t &rstate)
 		const object &objp = obj;
 		if (objp.type == OBJ_NONE)
 			continue;
-		const auto &&obj_light_emission = compute_light_emission(LevelSharedRobotInfoState, LevelUniqueLightState, Vclip, obj);
+		const auto &&obj_light_emission = compute_light_emission(Robot_info, LevelUniqueLightState, Vclip, obj);
 
 		if (((obj_light_emission.r+obj_light_emission.g+obj_light_emission.b)/3) > 0)
 			apply_light(vmsegptridx, obj_light_emission, vcsegptridx(objp.segnum), objp.pos, n_render_vertices, render_vertices, vert_segnum_list, obj);
@@ -599,8 +594,7 @@ static fix compute_headlight_light_on_object(const d_level_unique_headlight_stat
 
 	range_for (const object_base *const light_objp, partial_const_range(LevelUniqueHeadlightState.Headlights, LevelUniqueHeadlightState.Num_headlights))
 	{
-		auto vec_to_obj = vm_vec_sub(objp.pos, light_objp->pos);
-		const fix dist = vm_vec_normalize_quick(vec_to_obj);
+		const auto &&[dist, vec_to_obj] = vm_vec_normalize_quick_with_magnitude(vm_vec_sub(objp.pos, light_objp->pos));
 		if (dist > 0) {
 			const fix dot = vm_vec_dot(light_objp->orient.fvec, vec_to_obj);
 
@@ -638,9 +632,9 @@ static g3s_lrgb compute_seg_dynamic_light(const enumerated_array<g3s_lrgb, MAX_V
 
 static std::array<g3s_lrgb, MAX_OBJECTS> object_light;
 static std::array<object_signature_t, MAX_OBJECTS> object_sig;
+static int reset_lighting_hack;
 }
 const object *old_viewer;
-static int reset_lighting_hack;
 #define LIGHT_RATE i2f(4) //how fast the light ramps up
 
 void start_lighting_frame(const object &viewer)

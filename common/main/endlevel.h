@@ -28,6 +28,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include <array>
 #include "vecmat.h"
 #include "fwd-segment.h"
+#include "fwd-robot.h"
 #include "gr.h"
 #include "fwd-window.h"
 
@@ -40,7 +41,7 @@ struct d_unique_endlevel_state
 };
 
 extern grs_bitmap *terrain_bitmap;  //*satellite_bitmap,*station_bitmap,
-extern unsigned exit_modelnum, destroyed_exit_modelnum;
+extern polygon_model_index exit_modelnum, destroyed_exit_modelnum;
 extern int Endlevel_sequence;
 extern vms_matrix surface_orient;
 
@@ -50,7 +51,7 @@ void free_endlevel_data();
 
 #ifdef dsx
 namespace dsx {
-window_event_result do_endlevel_frame();
+window_event_result do_endlevel_frame(const d_level_shared_robot_info_state &LevelSharedRobotInfoState);
 window_event_result stop_endlevel_sequence();
 window_event_result start_endlevel_sequence();
 void render_endlevel_frame(grs_canvas &, fix eye_offset);

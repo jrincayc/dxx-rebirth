@@ -83,9 +83,10 @@ struct hli
 	uint8_t LevelNum;
 };
 
-#if defined(DXX_BUILD_DESCENT_I) || defined(DXX_BUILD_DESCENT_II)
+#ifdef dsx
 #include "kconfig.h"
 #include "multi.h"
+#include "fwd-game.h"
 #include "fwd-weapon.h"
 #include "d_array.h"
 
@@ -119,6 +120,35 @@ enum MouselookMode : uint8_t
 	MPAnarchy = 4,
 };
 
+enum class player_config_keyboard_index : std::size_t
+{
+	turn_lr,
+	pitch_ud,
+	slide_lr,
+	slide_ud,
+	bank_lr,
+};
+
+enum class player_config_mouse_index : std::size_t
+{
+	turn_lr,
+	pitch_ud,
+	slide_lr,
+	slide_ud,
+	bank_lr,
+	throttle,
+};
+
+enum class player_config_joystick_index : std::size_t
+{
+	turn_lr,
+	pitch_ud,
+	slide_lr,
+	slide_ud,
+	bank_lr,
+	throttle,
+};
+
 }
 
 namespace dsx {
@@ -129,6 +159,7 @@ struct player_config : prohibit_void_ptr<player_config>
 	HudType HudMode;
 	RespawnPress RespawnMode;
 	uint8_t MouselookFlags;
+	uint8_t PitchLockFlags;
 	using primary_weapon_order = std::array<uint8_t, MAX_PRIMARY_WEAPONS + 1>;
 	using secondary_weapon_order = std::array<uint8_t, MAX_SECONDARY_WEAPONS + 1>;
 	primary_weapon_order PrimaryOrder;
@@ -145,14 +176,14 @@ struct player_config : prohibit_void_ptr<player_config>
 	int AutoLeveling;
 	uint16_t NHighestLevels;
 	std::array<hli, MAX_MISSIONS> HighestLevels;
-	std::array<int, 5> KeyboardSens;
-	std::array<int, 6> JoystickSens;
-	std::array<int, 6> JoystickDead;
-	std::array<int, 6> JoystickLinear;
-	std::array<int, 6> JoystickSpeed;
+	enumerated_array<int, 5, player_config_keyboard_index> KeyboardSens;
+	enumerated_array<int, 6, player_config_joystick_index> JoystickSens;
+	enumerated_array<int, 6, player_config_joystick_index> JoystickDead;
+	enumerated_array<int, 6, player_config_joystick_index> JoystickLinear;
+	enumerated_array<int, 6, player_config_joystick_index> JoystickSpeed;
 	ubyte MouseFlightSim;
-	std::array<int, 6> MouseSens;
-        std::array<int, 6> MouseOverrun;
+	enumerated_array<int, 6, player_config_mouse_index> MouseSens;
+	enumerated_array<int, 6, player_config_mouse_index> MouseOverrun;
 	int MouseFSDead;
 	int MouseFSIndicator;
 	std::array<cockpit_mode_t, 2> CockpitMode; // 0 saves the "real" cockpit, 1 also saves letterbox and rear. Used to properly switch between modes and restore the real one.

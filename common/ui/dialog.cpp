@@ -40,6 +40,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include <memory>
 
 namespace dcx {
+namespace {
 
 static void ui_dialog_draw(UI_DIALOG *dlg)
 {
@@ -58,6 +59,7 @@ static void ui_dialog_draw(UI_DIALOG *dlg)
 		ui_draw_box_out(*grd_curcanv, 0, 0, req_w-1, req_h-1);
 	
 	gr_set_fontcolor(*grd_curcanv, CBLACK, CWHITE);
+}
 }
 
 // The dialog handler borrows heavily from the newmenu_handler
@@ -88,7 +90,7 @@ window_event_result UI_DIALOG::event_handler(const d_event &event)
 			if (rval != window_event_result::close)
 			{
 				d_event event2 = { EVENT_UI_DIALOG_DRAW };
-				window_send_event(*this, event2);
+				this->send_event(event2);
 			}
 			return rval;
 		}
@@ -102,6 +104,8 @@ window_event_result UI_DIALOG::event_handler(const d_event &event)
 	}
 }
 
+namespace {
+
 static short adjust_starting_coordinate(short value, const int limit)
 {
 	if (value < 0)
@@ -109,6 +113,8 @@ static short adjust_starting_coordinate(short value, const int limit)
 	if (value - 1 >= limit)
 		value = limit;
 	return value;
+}
+
 }
 
 UI_DIALOG::UI_DIALOG(short x, short y, const short w, const short h, const enum dialog_flags flags) :

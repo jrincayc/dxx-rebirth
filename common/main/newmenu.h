@@ -30,6 +30,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include <cstdint>
 #include <algorithm>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
@@ -43,6 +44,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #ifdef dsx
 #include "gamefont.h"
 #include "window.h"
+#include "backports-ranges.h"
 
 namespace dcx {
 
@@ -67,7 +69,7 @@ class newmenu_item
 	struct input_common_type
 	{
 		const char *allowed_chars;
-		int text_len;
+		unsigned text_len;
 		/* Only used by imenu, but placing it in imenu_specific_type
 		 * makes newmenu_item non-POD.  Some users expect newmenu_item
 		 * to be POD.  Placing group here does not increase overall size
@@ -119,7 +121,7 @@ private:
 	{
 #ifdef DXX_CONSTANT_TRUE
 		if (DXX_CONSTANT_TRUE(current_type != static_type))
-			DXX_ALWAYS_ERROR_FUNCTION(dxx_newmenu_trap_invalid_type, "invalid type access");
+			DXX_ALWAYS_ERROR_FUNCTION("invalid type access");
 #endif
 		if (current_type != static_type)
 			throw std::runtime_error("invalid type access");
@@ -130,11 +132,11 @@ private:
 			check_union_type(type, static_type);
 			return v;
 		}
-	void initialize_imenu(char *const text, int textlen, ntstring<NM_MAX_TEXT_LEN> &saved_text, const char *allowed_chars)
+	void initialize_imenu(char *const text, const uint16_t len, ntstring<NM_MAX_TEXT_LEN> &saved_text)
 	{
-		auto &im = imenu();
 		this->text = text;
-		new(&im) newmenu_item::imenu_specific_type({allowed_chars, textlen, 0}, saved_text);
+		auto &im = imenu();
+		new(&im) newmenu_item::imenu_specific_type({nullptr, len, 0}, saved_text);
 	}
 public:
 	struct nm_item_text
@@ -147,15 +149,21 @@ public:
 	};
 	struct nm_item_input
 	{
-		char *text;
 		const char *allowed_chars;
-		int textlen;
+		char *const text;
+		const uint16_t size;
 		template <std::size_t len>
+			requires(len > 1 && std::in_range<uint16_t>(len))
 			nm_item_input(std::array<char, len> &text, const char *const allowed_chars = nullptr) :
-				text(text.data()), allowed_chars(allowed_chars), textlen(static_cast<int>(len))
-			{
-				static_assert(static_cast<int>(len) == len);
-			}
+				allowed_chars(allowed_chars), text(text.data()), size(len)
+		{
+		}
+		template <std::size_t len>
+			requires(len != std::dynamic_extent && std::in_range<uint16_t>(len))
+			nm_item_input(const std::span<char, len> text) :
+				allowed_chars(nullptr), text(text.data()), size(len)
+		{
+		}
 	};
 	struct nm_item_slider
 	{
@@ -175,7 +183,7 @@ public:
 	{
 	}
 	newmenu_item(nm_item_input input) :
-		text(input.text),
+		text{input.text},
 		type(nm_type::input),
 		nm_private(input)
 	{
@@ -221,7 +229,7 @@ public:
 	uint8_t right_offset;
 	nm_type type
 #ifndef NDEBUG
-		= static_cast<nm_type>(UINT8_MAX);
+		{UINT8_MAX};
 #endif
 		;           // What kind of item this is, see NM_TYPE_????? defines
 	union nm_type_specific_data {
@@ -230,7 +238,7 @@ public:
 		{
 		}
 		nm_type_specific_data(const nm_item_input &input) :
-			input{{input.allowed_chars, input.textlen, 0}}
+			input{{input.allowed_chars, input.size, 0}}
 		{
 		}
 		nm_type_specific_data(const nm_item_slider &slider) :
@@ -245,9 +253,10 @@ public:
 	};
 	nm_type_specific_data nm_private;
 	template <std::size_t len>
-		void initialize_imenu(std::array<char, len> &text, ntstring<NM_MAX_TEXT_LEN> &saved_text, const char *allowed_chars = nullptr)
+		requires(len > 1 && std::in_range<uint16_t>(len))
+		void initialize_imenu(std::array<char, len> &text, ntstring<NM_MAX_TEXT_LEN> &saved_text)
 		{
-			initialize_imenu(text.data(), text.size() - 1, saved_text, allowed_chars);
+			initialize_imenu(text.data(), len - 1, saved_text);
 		}
 };
 
@@ -290,10 +299,10 @@ struct newmenu_layout
 {
 	struct adjusted_citem
 	{
-		const partial_range_t<newmenu_item *> items;
+		const ranges::subrange<newmenu_item *> items;
 		const int citem;
 		const uint8_t all_text;
-		static adjusted_citem create(partial_range_t<newmenu_item *> items, int citem);
+		static adjusted_citem create(ranges::subrange<newmenu_item *> items, int citem);
 	};
 	int             x,y,w,h;
 	short			swidth, sheight;
@@ -313,7 +322,7 @@ struct newmenu_layout
 	const uint8_t max_displayable;
 	const draw_box_flag draw_box;
 	uint8_t mouse_state;
-	const partial_range_t<newmenu_item *> items;
+	const ranges::subrange<newmenu_item *> items;
 	int	scroll_offset = 0;
 	newmenu_layout(const menu_title title, const menu_subtitle subtitle, const menu_filename filename, grs_canvas &parent_canvas, const tiny_mode_flag tiny_mode, const tab_processing_flag tabs_flag, const adjusted_citem citem_init, const draw_box_flag draw_box) :
 		citem(citem_init.citem),
@@ -338,14 +347,14 @@ struct newmenu_layout
 	void create_structure();
 };
 
-struct newmenu : newmenu_layout, window
+struct newmenu : newmenu_layout, window, mixin_trackable_window
 {
 	using subfunction_type = int(*)(newmenu *menu, const d_event &event, void *userdata);
 	newmenu(const menu_title title, const menu_subtitle subtitle, const menu_filename filename, const tiny_mode_flag tiny_mode, const tab_processing_flag tabs_flag, const adjusted_citem citem_init, grs_canvas &src, const draw_box_flag draw_box = draw_box_flag::menu_background) :
 		newmenu_layout(title, subtitle, filename, src, tiny_mode, tabs_flag, citem_init, draw_box), window(src, x, y, w, h)
 	{
 	}
-	int *rval = nullptr;			// Pointer to return value (for polling newmenus)
+	std::shared_ptr<int> rval;			// Pointer to return value (for polling newmenus)
 	virtual window_event_result event_handler(const d_event &) override;
 	static int process_until_closed(newmenu *);
 };
@@ -435,7 +444,7 @@ constexpr const unused_newmenu_userdata_t *unused_newmenu_userdata = nullptr;
 //should be called whenever the palette changes
 void newmenu_free_background();
 
-int newmenu_do2(menu_title title, menu_subtitle subtitle, partial_range_t<newmenu_item *> items, newmenu_subfunction subfunction, void *userdata, int citem, menu_filename filename);
+int newmenu_do2(menu_title title, menu_subtitle subtitle, ranges::subrange<newmenu_item *> items, newmenu_subfunction subfunction, void *userdata, int citem, menu_filename filename);
 
 // Pass an array of newmenu_items and it processes the menu. It will
 // return a -1 if Esc is pressed, otherwise, it returns the index of
@@ -447,13 +456,13 @@ int newmenu_do2(menu_title title, menu_subtitle subtitle, partial_range_t<newmen
 // either/both of these if you don't want them.
 // Same as above, only you can pass through what background bitmap to use.
 template <typename T>
-int newmenu_do2(const menu_title title, const menu_subtitle subtitle, partial_range_t<newmenu_item *> items, const newmenu_subfunction_t<T> subfunction, T *const userdata, const int citem = 0, const menu_filename filename = {})
+int newmenu_do2(const menu_title title, const menu_subtitle subtitle, ranges::subrange<newmenu_item *> items, const newmenu_subfunction_t<T> subfunction, T *const userdata, const int citem = 0, const menu_filename filename = {})
 {
 	return newmenu_do2(title, subtitle, std::move(items), reinterpret_cast<newmenu_subfunction>(subfunction), static_cast<void *>(userdata), citem, filename);
 }
 
 template <typename T>
-int newmenu_do2(const menu_title title, const menu_subtitle subtitle, partial_range_t<newmenu_item *> items, const newmenu_subfunction_t<const T> subfunction, const T *const userdata, const int citem = 0, const menu_filename filename = {})
+int newmenu_do2(const menu_title title, const menu_subtitle subtitle, ranges::subrange<newmenu_item *> items, const newmenu_subfunction_t<const T> subfunction, const T *const userdata, const int citem = 0, const menu_filename filename = {})
 {
 	return newmenu_do2(title, subtitle, std::move(items), reinterpret_cast<newmenu_subfunction>(subfunction), static_cast<void *>(const_cast<T *>(userdata)), citem, filename);
 }
@@ -473,7 +482,7 @@ namespace dsx {
 
 //Handles creating and selecting from the mission list.
 //Returns 1 if a mission was loaded.
-int select_mission (mission_filter_mode anarchy_mode, menu_title message, window_event_result (*when_selected)(void));
+void select_mission (mission_filter_mode anarchy_mode, menu_title message, window_event_result (*when_selected)(void));
 
 }
 
@@ -508,16 +517,9 @@ int newmenu_get_citem(newmenu *menu);
 // nm_messagebox( "Title", "Subtitle", 2, "Ok", "Cancel", "There are %d objects", nobjects );
 // Returns 0 through nchoices-1.
 //int nm_messagebox(const char *title, int nchoices, ...);
-#define nm_messagebox(T,N,...)	nm_messagebox_a##N((T), ##__VA_ARGS__)
-#define nm_messagebox_a1(T,A1				,F,...)	vnm_messagebox_aN(T,nm_messagebox_tie(A1			),F,##__VA_ARGS__)
-#define nm_messagebox_a2(T,A1,A2			,F,...)	vnm_messagebox_aN(T,nm_messagebox_tie(A1,A2			),F,##__VA_ARGS__)
-#define nm_messagebox_a3(T,A1,A2,A3			,F,...)	vnm_messagebox_aN(T,nm_messagebox_tie(A1,A2,A3		),F,##__VA_ARGS__)
-#define nm_messagebox_a4(T,A1,A2,A3,A4		,F,...)	vnm_messagebox_aN(T,nm_messagebox_tie(A1,A2,A3,A4	),F,##__VA_ARGS__)
-#define nm_messagebox_a5(T,A1,A2,A3,A4,A5	,F,...)	vnm_messagebox_aN(T,nm_messagebox_tie(A1,A2,A3,A4,A5),F,##__VA_ARGS__)
+using nm_messagebox_tie = cstring_tie<4>;
 
-typedef cstring_tie<5> nm_messagebox_tie;
-
-int vnm_messagebox_aN(menu_title title, const nm_messagebox_tie &tie, const char *format, ...) __attribute_format_printf(3, 4);
+int nm_messagebox(menu_title title, const nm_messagebox_tie &tie, const char *format, ...) __attribute_format_printf(3, 4);
 
 void nm_draw_background(grs_canvas &, int x1, int y1, int x2, int y2);
 
@@ -546,7 +548,7 @@ namespace dcx {
 
 int nm_messagebox_str(menu_title title, const nm_messagebox_tie &tie, menu_subtitle str);
 
-struct messagebox_newmenu :
+struct messagebox_newmenu final :
 	std::array<newmenu_item, nm_messagebox_tie::maximum_arity>,
 	newmenu
 {

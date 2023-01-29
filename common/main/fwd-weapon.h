@@ -25,7 +25,6 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 
 #pragma once
 
-#ifdef __cplusplus
 #include "pack.h"
 #include "pstypes.h"
 #include "maths.h"
@@ -34,18 +33,13 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include "kconfig.h"
 #include "weapon_id.h"
 
-#include "fwd-object.h"
-#include "fwd-vclip.h"
-#include <array>
+#include "fwd-powerup.h"
 
-enum powerup_type_t : uint8_t;
-
+#ifdef dsx
 #if defined(DXX_BUILD_DESCENT_II)
 #define LASER_HELIX_MASK        7   // must match number of bits in flags
 #define MAX_SUPER_LASER_LEVEL   laser_level::_6   // Note, laser levels are numbered from 0.
 #endif
-
-#if defined(DXX_BUILD_DESCENT_I) || defined(DXX_BUILD_DESCENT_II)
 
 struct PHYSFS_File;
 #if 0
@@ -87,6 +81,9 @@ constexpr std::integral_constant<unsigned, 70> MAX_WEAPON_TYPES{};
 
 constexpr std::integral_constant<unsigned, 10> MAX_PRIMARY_WEAPONS{};
 constexpr std::integral_constant<unsigned, 10> MAX_SECONDARY_WEAPONS{};
+
+enum class pig_hamfile_version : uint8_t;
+extern pig_hamfile_version Piggy_hamfile_version;
 #endif
 
 enum primary_weapon_index_t : uint8_t;
@@ -104,7 +101,11 @@ extern const enumerated_array<uint8_t, MAX_SECONDARY_WEAPONS, secondary_weapon_i
  */
 using weapon_info_array = std::array<weapon_info, MAX_WEAPON_TYPES>;
 extern weapon_info_array Weapon_info;
-void weapon_info_read_n(weapon_info_array &wi, std::size_t count, PHYSFS_File *fp, int file_version, std::size_t offset = 0);
+void weapon_info_read_n(weapon_info_array &wi, std::size_t count, PHYSFS_File *fp,
+#if defined(DXX_BUILD_DESCENT_II)
+						pig_hamfile_version file_version,
+#endif
+						std::size_t offset);
 
 //given a weapon index, return the flag value
 #define  HAS_PRIMARY_FLAG(index)  (1<<(index))
@@ -130,7 +131,7 @@ void weapon_info_read_n(weapon_info_array &wi, std::size_t count, PHYSFS_File *f
 //flags whether the last time we use this weapon, it was the 'super' version
 #endif
 //for each Secondary weapon, which gun it fires out of
-extern const std::array<uint8_t, MAX_SECONDARY_WEAPONS> Secondary_weapon_to_gun_num;
+extern const std::array<gun_num_t, MAX_SECONDARY_WEAPONS> Secondary_weapon_to_gun_num;
 }
 
 namespace dcx {
@@ -208,10 +209,10 @@ int pick_up_secondary(player_info &, secondary_weapon_index_t weapon_index, int 
 namespace dsx {
 int pick_up_vulcan_ammo(player_info &player_info, uint_fast32_t ammo_count, bool change_weapon = true);
 //this function is for when the player intentionally drops a powerup
-imobjptridx_t spit_powerup(const d_vclip_array &Vclip, const object_base &spitter, unsigned id, unsigned seed);
+imobjptridx_t spit_powerup(d_level_unique_object_state &LevelUniqueObjectState, const d_level_shared_segment_state &LevelSharedSegmentState, d_level_unique_segment_state &LevelUniqueSegmentState, const d_vclip_array &Vclip, const object_base &spitter, unsigned id, unsigned seed);
 
 #if defined(DXX_BUILD_DESCENT_II)
-int attempt_to_steal_item(vmobjptridx_t objp, vmobjptr_t playerobjp);
+void attempt_to_steal_item(vmobjptridx_t objp, const robot_info &, object &playerobjp);
 
 #define SMEGA_ID    40
 
@@ -223,9 +224,7 @@ extern void smega_rock_stuff(void);
 extern void init_smega_detonates(void);
 #endif
 }
-#endif
 
-#ifdef dsx
 namespace dsx {
 void InitWeaponOrdering();
 void CyclePrimary(player_info &);
@@ -241,6 +240,4 @@ void do_seismic_stuff();
 void DropCurrentWeapon(player_info &);
 void DropSecondaryWeapon(player_info &);
 }
-#endif
-
 #endif

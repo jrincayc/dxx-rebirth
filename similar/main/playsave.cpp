@@ -56,6 +56,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 
 #include "compiler-range_for.h"
 #include "d_range.h"
+#include "d_zip.h"
 #include "partial_range.h"
 
 #define PLAYER_EFFECTIVENESS_FILENAME_FORMAT	PLAYER_DIRECTORY_STRING("%s.eff")
@@ -81,6 +82,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #define PacketsPerSecStr "PacketsPerSec"
 #define NoFriendlyFireStr "NoFriendlyFire"
 #define MouselookFlagsStr "Mouselook"
+#define PitchLockFlagsStr "PitchLockRelease"
 #define AutosaveIntervalStr	"AutosaveInterval"
 #define TrackerStr "Tracker"
 #define TrackerNATHPStr "trackernat"
@@ -173,6 +175,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #define TOGGLES_CLOAKINVULTIMER_NAME_TEXT "cloakinvultimer"
 #define TOGGLES_RESPAWN_ANY_KEY	"respawnkey"
 #define TOGGLES_MOUSELOOK	"mouselook"
+#define TOGGLES_PITCH_LOCK	"pitchlock"
 #define TOGGLES_THIEF_ABSENCE_SP	"thiefabsent"
 #define TOGGLES_THIEF_NO_ENERGY_WEAPONS_SP	"thiefnoenergyweapons"
 #define TOGGLES_AUTOSAVE_INTERVAL_SP	"autosaveinterval"
@@ -186,6 +189,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 
 struct player_config PlayerCfg;
 namespace dsx {
+namespace {
 #if defined(DXX_BUILD_DESCENT_I)
 static void plyr_read_stats();
 static std::array<saved_game_sw, N_SAVE_SLOTS> saved_games;
@@ -193,28 +197,44 @@ static std::array<saved_game_sw, N_SAVE_SLOTS> saved_games;
 static inline void plyr_read_stats() {}
 static int get_lifetime_checksum (int a,int b);
 #endif
-}
 
-template <std::size_t N>
-static void check_weapon_reorder(std::array<ubyte, N> &w)
+template <typename weapon_type_out, typename weapon_type_from_file, std::size_t N>
+static void check_weapon_reorder(std::array<weapon_type_out, N> &wo, const std::array<weapon_type_from_file, N> &in)
 {
+	/* Examine the input array and update `m` to represent which elements were
+	 * found.  A well-formed input array will have exactly one of each value in
+	 * the range [0..N-1], and one occurrence of the sentinel `255`.  Since
+	 * only `N` elements are present, any duplicate value means some other
+	 * value will be missing.  If an out of range value is found, the loop
+	 * breaks early, because that also guarantees that at least one required
+	 * element will be missing.
+	 */
+	constexpr weapon_type_from_file cycle_never_autoselect_below{255};
 	uint_fast32_t m = 0;
-	range_for (const auto i, w)
-		if (i == 255)
+	for (auto &&[w, i] : zip(wo, in))
+	{
+		if (i == cycle_never_autoselect_below)
 			m |= 1 << N;
 		else if (i < N - 1)
 			m |= 1 << i;
 		else
 			break;
+		w = i;
+	}
+	/* If `m` is equal to the value below, then every desired element appeared
+	 * in the input sequence.  If the input sequence contained duplicates or
+	 * out of range values, then the test on `m` will fail, and the output
+	 * array will be reset to a sane default.
+	 */
 	if (m != ((1 << N) | ((1 << (N - 1)) - 1)))
 	{
-		w[0] = 255;
+		wo[0] = cycle_never_autoselect_below;
 		range_for (const uint_fast32_t i, xrange(1u, N))
-			w[i] = i - 1;
+			wo[i] = i - 1;
 	}
 }
+}
 
-namespace dsx {
 void new_player_config()
 {
 #if defined(DXX_BUILD_DESCENT_I)
@@ -225,6 +245,7 @@ void new_player_config()
 	PlayerCfg.ControlType=0; // Assume keyboard
 	PlayerCfg.RespawnMode = RespawnPress::Any;
 	PlayerCfg.MouselookFlags = 0;
+	PlayerCfg.PitchLockFlags = 0;
 	PlayerCfg.KeySettings = DefaultKeySettings;
 	PlayerCfg.KeySettingsRebirth = DefaultKeySettingsRebirth;
 	kc_set_controls();
@@ -234,17 +255,38 @@ void new_player_config()
 	PlayerCfg.NHighestLevels = 1;
 	PlayerCfg.HighestLevels[0].Shortname[0] = 0; //no name for mission 0
 	PlayerCfg.HighestLevels[0].LevelNum = 1; //was highest level in old struct
-	PlayerCfg.KeyboardSens[0] = PlayerCfg.KeyboardSens[1] = PlayerCfg.KeyboardSens[2] = PlayerCfg.KeyboardSens[3] = PlayerCfg.KeyboardSens[4] = 16;
-	PlayerCfg.JoystickSens[0] = PlayerCfg.JoystickSens[1] = PlayerCfg.JoystickSens[2] = PlayerCfg.JoystickSens[3] = PlayerCfg.JoystickSens[4] = PlayerCfg.JoystickSens[5] = 8;
-	PlayerCfg.JoystickDead[0] = PlayerCfg.JoystickDead[1] = PlayerCfg.JoystickDead[2] = PlayerCfg.JoystickDead[3] = PlayerCfg.JoystickDead[4] = PlayerCfg.JoystickDead[5] = 0;
-	PlayerCfg.JoystickLinear[0] = PlayerCfg.JoystickLinear[1] = PlayerCfg.JoystickLinear[2] = PlayerCfg.JoystickLinear[3] = PlayerCfg.JoystickLinear[4] = PlayerCfg.JoystickLinear[5] = 0;
-	PlayerCfg.JoystickSpeed[0] = PlayerCfg.JoystickSpeed[1] = PlayerCfg.JoystickSpeed[2] = PlayerCfg.JoystickSpeed[3] = PlayerCfg.JoystickSpeed[4] = PlayerCfg.JoystickSpeed[5] = 16;
+	{
+		auto &k = PlayerCfg.KeyboardSens;
+		k[player_config_keyboard_index::turn_lr] = k[player_config_keyboard_index::pitch_ud] = k[player_config_keyboard_index::slide_lr] = k[player_config_keyboard_index::slide_ud] = k[player_config_keyboard_index::bank_lr] = 16;
+	}
+	{
+		auto &j = PlayerCfg.JoystickSens;
+		j[player_config_joystick_index::turn_lr] = j[player_config_joystick_index::pitch_ud] = j[player_config_joystick_index::slide_lr] = j[player_config_joystick_index::slide_ud] = j[player_config_joystick_index::bank_lr] = j[player_config_joystick_index::throttle] = 8;
+	}
+	{
+		auto &j = PlayerCfg.JoystickDead;
+		j[player_config_joystick_index::turn_lr] = j[player_config_joystick_index::pitch_ud] = j[player_config_joystick_index::slide_lr] = j[player_config_joystick_index::slide_ud] = j[player_config_joystick_index::bank_lr] = j[player_config_joystick_index::throttle] = 0;
+	}
+	{
+		auto &j = PlayerCfg.JoystickLinear;
+		j[player_config_joystick_index::turn_lr] = j[player_config_joystick_index::pitch_ud] = j[player_config_joystick_index::slide_lr] = j[player_config_joystick_index::slide_ud] = j[player_config_joystick_index::bank_lr] = j[player_config_joystick_index::throttle] = 0;
+	}
+	{
+		auto &j = PlayerCfg.JoystickSpeed;
+		j[player_config_joystick_index::turn_lr] = j[player_config_joystick_index::pitch_ud] = j[player_config_joystick_index::slide_lr] = j[player_config_joystick_index::slide_ud] = j[player_config_joystick_index::bank_lr] = j[player_config_joystick_index::throttle] = 16;
+	}
 	PlayerCfg.MouseFlightSim = 0;
-	PlayerCfg.MouseSens[0] = PlayerCfg.MouseSens[1] = PlayerCfg.MouseSens[2] = PlayerCfg.MouseSens[3] = PlayerCfg.MouseSens[4] = PlayerCfg.MouseSens[5] = 8;
-        PlayerCfg.MouseOverrun[0] = PlayerCfg.MouseOverrun[1] = PlayerCfg.MouseOverrun[2] = PlayerCfg.MouseOverrun[3] = PlayerCfg.MouseOverrun[4] = PlayerCfg.MouseOverrun[5] = 0;
+	{
+		auto &m = PlayerCfg.MouseSens;
+		m[player_config_mouse_index::turn_lr] = m[player_config_mouse_index::pitch_ud] = m[player_config_mouse_index::slide_lr] = m[player_config_mouse_index::slide_ud] = m[player_config_mouse_index::bank_lr] = m[player_config_mouse_index::throttle] = 8;
+	}
+	{
+		auto &m = PlayerCfg.MouseOverrun;
+		m[player_config_mouse_index::turn_lr] = m[player_config_mouse_index::pitch_ud] = m[player_config_mouse_index::slide_lr] = m[player_config_mouse_index::slide_ud] = m[player_config_mouse_index::bank_lr] = m[player_config_mouse_index::throttle] = 0;
+	}
 	PlayerCfg.MouseFSDead = 0;
 	PlayerCfg.MouseFSIndicator = 1;
-	PlayerCfg.CockpitMode[0] = PlayerCfg.CockpitMode[1] = CM_FULL_COCKPIT;
+	PlayerCfg.CockpitMode[0] = PlayerCfg.CockpitMode[1] = cockpit_mode_t::full_cockpit;
 	PlayerCfg.ReticleType = RET_TYPE_CLASSIC;
 	PlayerCfg.ReticleRGBA[0] = RET_COLOR_DEFAULT_R; PlayerCfg.ReticleRGBA[1] = RET_COLOR_DEFAULT_G; PlayerCfg.ReticleRGBA[2] = RET_COLOR_DEFAULT_B; PlayerCfg.ReticleRGBA[3] = RET_COLOR_DEFAULT_A;
 	PlayerCfg.ReticleSize = 0;
@@ -290,34 +332,24 @@ void new_player_config()
 }
 }
 
-static int convert_pattern_array(const char *name, std::size_t namelen, int *array, std::size_t arraylen, const char *word, const char *line)
+namespace {
+
+static int convert_pattern_array(const std::span<const char> name, const std::span<int> array, const char *word, const char *line)
 {
-	if (memcmp(word, name, namelen - 1))
+	if (memcmp(word, name.data(), name.size() - 1))
 		return 0;
 	char *p;
-	unsigned long which = strtoul(word + namelen - 1, &p, 10);
-	if (*p || which >= arraylen)
+	const unsigned long which = strtoul(word + name.size() - 1, &p, 10);
+	if (*p || which >= array.size())
 		return 0;
 	array[which] = strtol(line, NULL, 10);
 	return 1;
 }
 
-template <std::size_t namelen, std::size_t arraylen>
-static int convert_pattern_array(const char (&name)[namelen], std::array<int, arraylen> &array, const char *word, const char *line)
+static void print_pattern_array(PHYSFS_File *fout, const char *name, const std::span<const int> array)
 {
-	return convert_pattern_array(name, namelen, &array[0], arraylen, word, line);
-}
-
-static void print_pattern_array(PHYSFS_File *fout, const char *name, const int *array, std::size_t arraylen)
-{
-	for (std::size_t i = 0; i < arraylen; ++i)
+	for (std::size_t i = 0; i < array.size(); ++i)
 		PHYSFSX_printf(fout,"%s%" DXX_PRI_size_type "=%d\n", name, i, array[i]);
-}
-
-template <std::size_t arraylen>
-static void print_pattern_array(PHYSFS_File *fout, const char *name, const std::array<int, arraylen> &array)
-{
-	print_pattern_array(fout, name, &array[0], arraylen);
 }
 
 static const char *splitword(char *line, char c)
@@ -330,8 +362,10 @@ static const char *splitword(char *line, char c)
 	}
 	return p;
 }
+}
 
 namespace dsx {
+namespace {
 static void read_player_dxx(const char *filename)
 {
 	plyr_read_stats();
@@ -352,9 +386,8 @@ static void read_player_dxx(const char *filename)
 				if (!value)
 					continue;
 #define CONVERT_WEAPON_REORDER_VALUE(A,F)	\
-	unsigned int wo0=0,wo1=0,wo2=0,wo3=0,wo4=0,wo5=0;	\
-	if (sscanf(value,F,&wo0, &wo1, &wo2, &wo3, &wo4, &wo5) == 6)	\
-		A[0]=wo0, A[1]=wo1, A[2]=wo2, A[3]=wo3, A[4]=wo4, A[5]=wo5, check_weapon_reorder(A);
+	if (std::array<unsigned, 6> wo; sscanf(value, F, &wo[0], &wo[1], &wo[2], &wo[3], &wo[4], &wo[5]) == 6)	\
+		check_weapon_reorder(A, wo)
 				if(!strcmp(line,WEAPON_REORDER_PRIMARY_NAME_TEXT))
 				{
 					CONVERT_WEAPON_REORDER_VALUE(PlayerCfg.PrimaryOrder, WEAPON_REORDER_PRIMARY_VALUE_TEXT);
@@ -454,6 +487,7 @@ static void read_player_dxx(const char *filename)
 		else if (!strcmp(line,TOGGLES_HEADER_TEXT))
 		{
 			PlayerCfg.MouselookFlags = 0;
+			PlayerCfg.PitchLockFlags = 0;
 #if defined(DXX_BUILD_DESCENT_II)
 			PlayerCfg.ThiefModifierFlags = 0;
 #endif
@@ -508,6 +542,8 @@ static void read_player_dxx(const char *filename)
 					PlayerCfg.RespawnMode = static_cast<RespawnPress>(atoi(value));
 				else if (!strcmp(line, TOGGLES_MOUSELOOK))
 					PlayerCfg.MouselookFlags = strtoul(value, 0, 10);
+				else if (!strcmp(line, TOGGLES_PITCH_LOCK))
+					PlayerCfg.PitchLockFlags = strtoul(value, 0, 10);
 			}
 		}
 		else if (!strcmp(line,GRAPHICS_HEADER_TEXT))
@@ -554,8 +590,10 @@ static void read_player_dxx(const char *filename)
 		}
 	}
 }
+}
 
 #if defined(DXX_BUILD_DESCENT_I)
+namespace {
 constexpr char effcode1[]="d1xrocks_SKCORX!D";
 constexpr char effcode2[]="AObe)7Rn1 -+/zZ'0";
 constexpr char effcode3[]="aoeuidhtnAOEUIDH6";
@@ -598,23 +636,20 @@ static void plyr_read_stats_v(int *k, int *d)
 	if (auto f = PHYSFSX_openReadBuffered(filename).first)
 	{
 		PHYSFSX_gets_line_t<256> line;
-		if(!PHYSFS_eof(f))
+		if (!PHYSFS_eof(f) && PHYSFSX_fgets(line, f))
 		{
-			 PHYSFSX_fgets(line,f);
 			 const char *value=splitword(line,':');
 			 if(!strcmp(line,"kills") && value)
 				*k=atoi(value);
 		}
-		if(!PHYSFS_eof(f))
+		if (!PHYSFS_eof(f) && PHYSFSX_fgets(line, f))
                 {
-			 PHYSFSX_fgets(line,f);
 			 const char *value=splitword(line,':');
 			 if(!strcmp(line,"deaths") && value)
 				*d=atoi(value);
 		 }
-		if(!PHYSFS_eof(f))
+		if (!PHYSFS_eof(f) && PHYSFSX_fgets(line, f))
 		{
-			 PHYSFSX_fgets(line,f);
 			 const char *value=splitword(line,':');
 			 if(value && !strcmp(line,"key") && strlen(value)>10){
 				 if (value[0]=='0' && value[1]=='1'){
@@ -638,6 +673,7 @@ static void plyr_read_stats()
 {
 	plyr_read_stats_v(&PlayerCfg.NetlifeKills,&PlayerCfg.NetlifeKilled);
 }
+}
 
 void plyr_save_stats()
 {
@@ -653,7 +689,7 @@ void plyr_save_stats()
 
 	PHYSFSX_printf(f,"kills:%i\n",kills);
 	PHYSFSX_printf(f,"deaths:%i\n",deaths);
-	PHYSFSX_printf(f,"key:01 ");
+	PHYSFSX_puts_literal(f, "key:01 ");
 
 	if (kills < 0)
 	{
@@ -714,6 +750,7 @@ void plyr_save_stats()
 }
 #endif
 
+namespace {
 static int write_player_dxx(const char *filename)
 {
 	int rc=0;
@@ -783,7 +820,7 @@ static int write_player_dxx(const char *filename)
 							COCKPIT_HEADER_TEXT "\n"
 							);
 #if defined(DXX_BUILD_DESCENT_I)
-		PHYSFSX_printf(fout,COCKPIT_MODE_NAME_TEXT "=%i\n",PlayerCfg.CockpitMode[0]);
+		PHYSFSX_printf(fout, COCKPIT_MODE_NAME_TEXT "=%i\n", underlying_value(PlayerCfg.CockpitMode[0]));
 #endif
 		PHYSFSX_printf(fout,COCKPIT_HUD_NAME_TEXT "=%u\n", static_cast<unsigned>(PlayerCfg.HudMode));
 		PHYSFSX_printf(fout,COCKPIT_RETICLE_TYPE_NAME_TEXT "=%i\n",PlayerCfg.ReticleType);
@@ -813,6 +850,7 @@ static int write_player_dxx(const char *filename)
                 PHYSFSX_printf(fout,TOGGLES_CLOAKINVULTIMER_NAME_TEXT "=%i\n",PlayerCfg.CloakInvulTimer);
 		PHYSFSX_printf(fout,TOGGLES_RESPAWN_ANY_KEY "=%i\n",static_cast<unsigned>(PlayerCfg.RespawnMode));
 		PHYSFSX_printf(fout, TOGGLES_MOUSELOOK "=%i\n", PlayerCfg.MouselookFlags);
+		PHYSFSX_printf(fout, TOGGLES_PITCH_LOCK "=%i\n", PlayerCfg.PitchLockFlags);
 		PHYSFSX_puts_literal(fout,
 							END_TEXT "\n"
 							GRAPHICS_HEADER_TEXT "\n"
@@ -835,6 +873,7 @@ static int write_player_dxx(const char *filename)
 	}
 	else
 		return errno;
+}
 }
 
 //read in the player's saved games.  returns errno (0 == no error)
@@ -859,7 +898,7 @@ int read_player_file()
 	auto &&[file, physfserr] = PHYSFSX_openReadBuffered(filename);
 	if (!file)
 	{
-		nm_messagebox(menu_title{TXT_ERROR}, 1, TXT_OK, "Failed to open PLR file\n%s\n\n%s", filename, PHYSFS_getErrorByCode(physfserr));
+		nm_messagebox(menu_title{TXT_ERROR}, {TXT_OK}, "Failed to open PLR file\n%s\n\n%s", filename, PHYSFS_getErrorByCode(physfserr));
 		return -1;
 	}
 
@@ -1100,13 +1139,16 @@ int read_player_file()
 #if defined(DXX_BUILD_DESCENT_II)
 		PlayerCfg.ControlType = control_type_dos;
 	
+		std::array<uint8_t, 22> weapon_file_order{};
+		std::array<uint8_t, 11> primary_order, secondary_order;
+		PHYSFS_read(file, weapon_file_order.data(), weapon_file_order.size(), 1);
 		range_for (const unsigned i, xrange(11u))
 		{
-			PlayerCfg.PrimaryOrder[i] = PHYSFSX_readByte(file);
-			PlayerCfg.SecondaryOrder[i] = PHYSFSX_readByte(file);
+			primary_order[i] = weapon_file_order[i * 2];
+			secondary_order[i] = weapon_file_order[(i * 2) + 1];
 		}
-		check_weapon_reorder(PlayerCfg.PrimaryOrder);
-		check_weapon_reorder(PlayerCfg.SecondaryOrder);
+		check_weapon_reorder(PlayerCfg.PrimaryOrder, primary_order);
+		check_weapon_reorder(PlayerCfg.SecondaryOrder, secondary_order);
 
 		if (player_file_version>=16)
 		{
@@ -1181,8 +1223,9 @@ int read_player_file()
 	}
 
 	//read guidebot name
-	if (player_file_version >= 18)
-		PHYSFSX_fgets(PlayerCfg.GuidebotName, file);
+	if (player_file_version >= 18 && PHYSFSX_fgets(PlayerCfg.GuidebotName, file))
+	{
+	}
 	else
 		PlayerCfg.GuidebotName = "GUIDE-BOT";
 	PlayerCfg.GuidebotNameReal = PlayerCfg.GuidebotName;
@@ -1190,7 +1233,12 @@ int read_player_file()
 		if (player_file_version >= 24) 
 		{
 			PHYSFSX_gets_line_t<128> buf;
-			PHYSFSX_fgets(buf, file);			// Just read it in fpr DPS.
+			if (PHYSFSX_fgets(buf, file))			// Just read it in fpr DPS.
+			{
+				/* Nothing to do.  Buffer contents are ignored.  This is only
+				 * read for its side effect on the file position.
+				 */
+			}
 		}
 	}
 #endif
@@ -1208,11 +1256,12 @@ int read_player_file()
 	return EZERO;
 
  read_player_file_failed:
-	nm_messagebox(menu_title{TXT_ERROR}, 1, TXT_OK, "%s\n\n%s", "Error reading PLR file", PHYSFS_getLastError());
+	nm_messagebox(menu_title{TXT_ERROR}, {TXT_OK}, "%s\n\n%s", "Error reading PLR file", PHYSFS_getLastError());
 	return -1;
 }
 }
 
+namespace {
 /* Given a Mission_path, return a pair of pointers.
  * - If the mission cannot be saved, both pointers are nullptr.
  * - If the mission name was previously used, return a pointer to that
@@ -1222,7 +1271,7 @@ int read_player_file()
  *   pointer to end().  The caller must check that the first unused
  *   element is not end().
  */
-static std::array<std::array<hli, MAX_MISSIONS>::pointer, 2> find_hli_entry(const partial_range_t<hli *> &r, const Mission_path &m)
+static std::array<std::array<hli, MAX_MISSIONS>::pointer, 2> find_hli_entry(const ranges::subrange<hli *> r, const Mission_path &m)
 {
 	const auto mission_filename = m.filename;
 	const auto mission_length = std::distance(mission_filename, m.path.end());
@@ -1237,8 +1286,9 @@ static std::array<std::array<hli, MAX_MISSIONS>::pointer, 2> find_hli_entry(cons
 	const auto &&a = [p = &*mission_filename](const hli &h) {
 		return !d_stricmp(h.Shortname.data(), p);
 	};
-	const auto i = std::find_if(r.begin(), r.end(), a);
+	const auto &&i = ranges::find_if(r, a);
 	return {{&*i, r.end()}};
+}
 }
 
 //set a new highest level for player for this mission
@@ -1399,7 +1449,7 @@ void write_player_file()
 	PHYSFS_writeULE16(file, SAVED_GAME_VERSION);
 	PHYSFS_writeULE16(file, PLAYER_STRUCT_VERSION);
 	PHYSFS_writeSLE32(file, PlayerCfg.NHighestLevels);
-	PHYSFS_writeSLE32(file, PlayerCfg.DefaultDifficulty);
+	PHYSFS_writeSLE32(file, underlying_value(PlayerCfg.DefaultDifficulty));
 	PHYSFS_writeSLE32(file, PlayerCfg.AutoLeveling);
 	errno_ret = EZERO;
 
@@ -1457,7 +1507,7 @@ void write_player_file()
 
 	if (errno_ret != EZERO) {
 		PHYSFS_delete(filename);			//delete bogus file
-		nm_messagebox(menu_title{TXT_ERROR}, 1, TXT_OK, "%s\n\n%s",TXT_ERROR_WRITING_PLR, strerror(errno_ret));
+		nm_messagebox(menu_title{TXT_ERROR}, {TXT_OK}, "%s\n\n%s",TXT_ERROR_WRITING_PLR, strerror(errno_ret));
 	}
 #elif defined(DXX_BUILD_DESCENT_II)
 	(void)errno_ret;
@@ -1465,10 +1515,10 @@ void write_player_file()
 
 	
 	PHYSFS_seek(file,PHYSFS_tell(file)+2*(sizeof(PHYSFS_uint16))); // skip Game_window_w, Game_window_h
-	PHYSFSX_writeU8(file, PlayerCfg.DefaultDifficulty);
+	PHYSFSX_writeU8(file, underlying_value(PlayerCfg.DefaultDifficulty));
 	PHYSFSX_writeU8(file, PlayerCfg.AutoLeveling);
 	PHYSFSX_writeU8(file, PlayerCfg.ReticleType==RET_TYPE_NONE?0:1);
-	PHYSFSX_writeU8(file, PlayerCfg.CockpitMode[0]);
+	PHYSFSX_writeU8(file, underlying_value(PlayerCfg.CockpitMode[0]));
 	PHYSFS_seek(file,PHYSFS_tell(file)+sizeof(PHYSFS_uint8)); // skip Default_display_mode
 	PHYSFSX_writeU8(file, static_cast<uint8_t>(PlayerCfg.MissileViewEnabled));
 	PHYSFSX_writeU8(file, PlayerCfg.HeadlightActiveDefault);
@@ -1545,7 +1595,7 @@ void write_player_file()
 	return;
 
  write_player_file_failed:
-	nm_messagebox(menu_title{TXT_ERROR}, 1, TXT_OK, "%s\n\n%s", TXT_ERROR_WRITING_PLR, PHYSFS_getLastError());
+	nm_messagebox(menu_title{TXT_ERROR}, {TXT_OK}, "%s\n\n%s", TXT_ERROR_WRITING_PLR, PHYSFS_getLastError());
 	if (file)
 	{
 		file.reset();
@@ -1554,6 +1604,7 @@ void write_player_file()
 #endif
 }
 
+namespace {
 #if defined(DXX_BUILD_DESCENT_II)
 static int get_lifetime_checksum (int a,int b)
 {
@@ -1571,11 +1622,11 @@ static int get_lifetime_checksum (int a,int b)
 template <uint_fast32_t shift, uint_fast32_t width>
 static void convert_duplicate_powerup_integer(packed_netduplicate_items &d, const char *value)
 {
-	/* Initialize 'i' to avoid bogus -Wmaybe-uninitialized at -Og on
-	 * gcc-4.9 */
-	unsigned i = 0;
-	if (convert_integer(i, value) && !(i & ~((1 << width) - 1)))
+	if (auto r = convert_integer<unsigned>(value); !r)
+		return;
+	else if (const auto i = *r; !(i & ~((1 << width) - 1)))
 		d.set_sub_field<shift, width>(i);
+}
 }
 
 // read stored values from ngp file to netgame_info
@@ -1606,23 +1657,23 @@ void read_netgame_profile(netgame_info *ng)
 			convert_string(ng->game_name, value, eol);
 		else if (cmp(lb, eq, GameModeStr))
 		{
-			uint8_t gamemode;
-			if (convert_integer(gamemode, value))
-				ng->gamemode = network_game_type{gamemode};
+			if (auto gamemode = convert_integer<uint8_t>(value))
+				ng->gamemode = network_game_type{*gamemode};
 		}
 		else if (cmp(lb, eq, RefusePlayersStr))
 			convert_integer(ng->RefusePlayers, value);
 		else if (cmp(lb, eq, DifficultyStr))
 		{
-			uint8_t difficulty;
-			if (convert_integer(difficulty, value))
-				ng->difficulty = cast_clamp_difficulty(difficulty);
+			if (auto difficulty = convert_integer<uint8_t>(value))
+				ng->difficulty = cast_clamp_difficulty(*difficulty);
 		}
 		else if (cmp(lb, eq, GameFlagsStr))
 		{
-			packed_game_flags p;
-			if (convert_integer(p.value, value))
+			if (auto r = convert_integer<uint8_t>(value))
+			{
+				const packed_game_flags p{*r};
 				ng->game_flag = unpack_game_flags(&p);
+			}
 		}
 		else if (cmp(lb, eq, AllowedItemsStr))
 			convert_integer(ng->AllowedItems, value);
@@ -1664,9 +1715,8 @@ void read_netgame_profile(netgame_info *ng)
 			convert_integer(ng->KillGoal, value);
 		else if (cmp(lb, eq, PlayTimeAllowedStr))
 		{
-			int PlayTimeAllowed;
-			if (convert_integer(PlayTimeAllowed, value))
-				ng->PlayTimeAllowed = std::chrono::duration<int, netgame_info::play_time_allowed_abi_ratio>(PlayTimeAllowed);
+			if (const auto r = convert_integer<int>(value))
+				ng->PlayTimeAllowed = std::chrono::duration<int, netgame_info::play_time_allowed_abi_ratio>(*r);
 		}
 		else if (cmp(lb, eq, ControlInvulTimeStr))
 			convert_integer(ng->control_invul_time, value);
@@ -1676,11 +1726,12 @@ void read_netgame_profile(netgame_info *ng)
 			convert_integer(ng->NoFriendlyFire, value);
 		else if (cmp(lb, eq, MouselookFlagsStr))
 			convert_integer(ng->MouselookFlags, value);
+		else if (cmp(lb, eq, PitchLockFlagsStr))
+			convert_integer(ng->PitchLockFlags, value);
 		else if (cmp(lb, eq, AutosaveIntervalStr))
 		{
-			uint16_t AutosaveInterval;
-			if (convert_integer(AutosaveInterval, value))
-				ng->MPGameplayOptions.AutosaveInterval = std::chrono::seconds(AutosaveInterval);
+			if (const auto r = convert_integer<uint16_t>(value))
+				ng->MPGameplayOptions.AutosaveInterval = std::chrono::seconds(*r);
 		}
 #if DXX_USE_TRACKER
 		else if (cmp(lb, eq, TrackerStr))
@@ -1703,7 +1754,7 @@ void write_netgame_profile(netgame_info *ng)
 	PHYSFSX_printf(file, GameNameStr "=%s\n", ng->game_name.data());
 	PHYSFSX_printf(file, GameModeStr "=%i\n", underlying_value(ng->gamemode));
 	PHYSFSX_printf(file, RefusePlayersStr "=%i\n", ng->RefusePlayers);
-	PHYSFSX_printf(file, DifficultyStr "=%i\n", ng->difficulty);
+	PHYSFSX_printf(file, DifficultyStr "=%i\n", underlying_value(ng->difficulty));
 	PHYSFSX_printf(file, GameFlagsStr "=%i\n", pack_game_flags(&ng->game_flag).value);
 	PHYSFSX_printf(file, AllowedItemsStr "=%i\n", ng->AllowedItems);
 	PHYSFSX_printf(file, SpawnGrantedItemsStr "=%i\n", ng->SpawnGrantedItems.mask);
@@ -1727,6 +1778,7 @@ void write_netgame_profile(netgame_info *ng)
 	PHYSFSX_printf(file, PacketsPerSecStr "=%i\n", ng->PacketsPerSec);
 	PHYSFSX_printf(file, NoFriendlyFireStr "=%i\n", ng->NoFriendlyFire);
 	PHYSFSX_printf(file, MouselookFlagsStr "=%i\n", ng->MouselookFlags);
+	PHYSFSX_printf(file, PitchLockFlagsStr "=%i\n", ng->PitchLockFlags);
 	PHYSFSX_printf(file, AutosaveIntervalStr "=%i\n", ng->MPGameplayOptions.AutosaveInterval.count());
 #if DXX_USE_TRACKER
 	PHYSFSX_printf(file, TrackerStr "=%i\n", ng->Tracker);

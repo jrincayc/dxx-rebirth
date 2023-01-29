@@ -1,7 +1,6 @@
 #pragma once
 
 #include <type_traits>
-#include "dxxsconf.h"
 
 template <typename T>
 class exact_type
@@ -22,13 +21,13 @@ public:
 		bool operator>(U &&) const = delete;
 	template <typename U>
 		bool operator>=(U &&) const = delete;
-	template <typename U>
-		bool operator!=(U &&rhs) const { return !operator==(static_cast<U &&>(rhs)); }
 	constexpr exact_type(T *t) : p(t) {}
 	// Conversion to the exact type is permitted
 	constexpr operator const T *() const { return p; }
 	constexpr operator typename std::remove_const<T>::type *() const { return p; }
 	constexpr bool operator==(const T *rhs) const { return p == rhs; }
+	[[nodiscard]]
+	constexpr bool operator==(const exact_type<T> &rhs) const = default;
 };
 
 template <typename T>

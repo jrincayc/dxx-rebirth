@@ -115,9 +115,10 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 namespace d1x {
 namespace {
 
-static int8_t find_next_level(const int secret_flag, const int current_level_num, const Mission &mission)
+static int8_t find_next_level(const next_level_request_secret_flag secret_flag, const int current_level_num, const Mission &mission)
 {
-	if (secret_flag) {			//go to secret level instead
+	if (secret_flag != next_level_request_secret_flag::only_normal_level)
+	{			//go to secret level instead
 		for (const auto &&[idx, table_entry] : enumerate(
 				unchecked_partial_range(
 					mission.secret_level_table.get(),
@@ -195,7 +196,7 @@ PHYSFSX_gets_line_t<LEVEL_NAME_LEN> Current_level_name;
 unsigned	N_players=1;	// Number of players ( >1 means a net game, eh?)
 playernum_t Player_num;	// The player number who is on the console.
 fix StartingShields=INITIAL_SHIELDS;
-std::array<obj_position, MAX_PLAYERS> Player_init;
+per_player_array<obj_position> Player_init;
 
 // Global variables telling what sort of game we have
 unsigned NumNetPlayerPositions;
@@ -211,7 +212,7 @@ static bool is_object_of_type(const object_base &o)
 
 static unsigned get_starting_concussion_missile_count()
 {
-	return 2 + NDL - GameUniqueState.Difficulty_level;
+	return 2 + NDL - underlying_value(GameUniqueState.Difficulty_level);
 }
 
 }
@@ -221,9 +222,16 @@ static unsigned get_starting_concussion_missile_count()
 namespace dsx {
 namespace {
 static void init_player_stats_ship(object &, fix GameTime64);
-static window_event_result AdvanceLevel(int secret_flag);
+static window_event_result AdvanceLevel(
+#if defined(DXX_BUILD_DESCENT_I)
+#undef AdvanceLevel
+	next_level_request_secret_flag secret_flag
+#elif defined(DXX_BUILD_DESCENT_II)
+#define AdvanceLevel(secret_flag)	((void)secret_flag,AdvanceLevel())
+#endif
+	);
 static void StartLevel(int random_flag);
-static void copy_defaults_to_robot_all(void);
+static void copy_defaults_to_robot_all(const d_robot_info_array &Robot_info);
 
 //--------------------------------------------------------------------
 static void verify_console_object()
@@ -246,25 +254,63 @@ static unsigned count_number_of_objects_of_type(fvcobjptr &vcobjptr)
 #define count_number_of_robots	count_number_of_objects_of_type<OBJ_ROBOT>
 #define count_number_of_hostages	count_number_of_objects_of_type<OBJ_HOSTAGE>
 
-static bool operator!=(const vms_vector &a, const vms_vector &b)
+constexpr constant_xrange<sidenum_t, sidenum_t::WRIGHT, sidenum_t::WFRONT> displacement_sides{};
+static_assert(static_cast<uint8_t>(sidenum_t::WBACK) + 1 == static_cast<uint8_t>(sidenum_t::WFRONT), "side ordering error");
+
+static unsigned generate_extra_starts_by_copying(object_array &Objects, valptridx<player>::array_managed_type &Players, segment_array &Segments, const xrange<unsigned, std::integral_constant<unsigned, 0>> preplaced_start_range, const per_player_array<sidemask_t> &player_init_segment_capacity_flag, const unsigned total_required_num_starts, unsigned synthetic_player_idx)
 {
-	return a.x != b.x || a.y != b.y || a.z != b.z;
+	for (const auto side : displacement_sides)
+	{
+		for (const auto old_player_idx : preplaced_start_range)
+		{
+			auto &old_player_ref = *Players.vcptr(old_player_idx);
+			const auto &&old_player_ptridx = Objects.vcptridx(old_player_ref.objnum);
+			auto &old_player_obj = *old_player_ptridx;
+			if (player_init_segment_capacity_flag[old_player_idx] & build_sidemask(side))
+			{
+				auto &&segp = Segments.vmptridx(old_player_obj.segnum);
+				/* Copy the start exactly.  The next loop in the caller will
+				 * fix the collisions caused by placing the clone on top of the
+				 * original.
+				 *
+				 * Currently, there is no handling for the case that the
+				 * level author already put two players too close together.
+				 * If this is a problem, more logic can be added to suppress
+				 * cloning in that case.
+				 */
+				const auto &&extra_player_ptridx = obj_create_copy(old_player_obj, segp);
+				if (extra_player_ptridx == object_none)
+				{
+					con_printf(CON_URGENT, "%s:%u: warning: failed to copy start object %hu", __FILE__, __LINE__, old_player_ptridx.get_unchecked_index());
+					continue;
+				}
+				Players.vmptr(synthetic_player_idx)->objnum = extra_player_ptridx;
+				auto &extra_player_obj = *extra_player_ptridx;
+				set_player_id(extra_player_obj, synthetic_player_idx);
+				con_printf(CON_NORMAL, "Copied player %u (object %hu at {%i, %i, %i}) to create player %u (object %hu).", old_player_idx, old_player_ptridx.get_unchecked_index(), old_player_obj.pos.x, old_player_obj.pos.y, old_player_obj.pos.z, synthetic_player_idx, extra_player_ptridx.get_unchecked_index());
+				if (++ synthetic_player_idx >= total_required_num_starts)
+					return synthetic_player_idx;
+			}
+		}
+	}
+	return synthetic_player_idx;
 }
 
 static unsigned generate_extra_starts_by_displacement_within_segment(const unsigned preplaced_starts, const unsigned total_required_num_starts)
 {
+	const auto &&preplaced_start_range = xrange(preplaced_starts);
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &Vertices = LevelSharedVertexState.get_vertices();
 	auto &vcobjptr = Objects.vcptr;
 	auto &vmobjptr = Objects.vmptr;
-	std::array<uint8_t, MAX_PLAYERS> player_init_segment_capacity_flag{};
+	per_player_array<sidemask_t> player_init_segment_capacity_flag{};
 	DXX_MAKE_VAR_UNDEFINED(player_init_segment_capacity_flag);
-	static_assert(WRIGHT + 1 == WBOTTOM, "side ordering error");
-	static_assert(WBOTTOM + 1 == WBACK, "side ordering error");
-	constexpr uint8_t capacity_x = 1 << WRIGHT;
-	constexpr uint8_t capacity_y = 1 << WBOTTOM;
-	constexpr uint8_t capacity_z = 1 << WBACK;
+	static_assert(static_cast<uint8_t>(sidenum_t::WRIGHT) + 1 == static_cast<uint8_t>(sidenum_t::WBOTTOM), "side ordering error");
+	static_assert(static_cast<uint8_t>(sidenum_t::WBOTTOM) + 1 == static_cast<uint8_t>(sidenum_t::WBACK), "side ordering error");
+	constexpr auto capacity_x = build_sidemask(sidenum_t::WRIGHT);
+	constexpr auto capacity_y = build_sidemask(sidenum_t::WBOTTOM);
+	constexpr auto capacity_z = build_sidemask(sidenum_t::WBACK);
 	/* When players are displaced, they are moved by their size
 	 * multiplied by this constant.  Larger values provide more
 	 * separation between the player starts, but increase the chance
@@ -274,7 +320,7 @@ static unsigned generate_extra_starts_by_displacement_within_segment(const unsig
 	constexpr fix size_scalar = 0x18000;	// 1.5 in fixed point
 	unsigned segments_with_spare_capacity = 0;
 	auto &vcvertptr = Vertices.vcptr;
-	for (unsigned i = 0; i < preplaced_starts; ++i)
+	for (const auto i : preplaced_start_range)
 	{
 		/* For each existing Player_init, compute whether the segment is
 		 * large enough in each dimension to support adding more ships.
@@ -286,7 +332,7 @@ static unsigned generate_extra_starts_by_displacement_within_segment(const unsig
 		auto &old_player_obj = *vcobjptr(plr.objnum);
 		const vm_distance_squared size2(fixmul64(old_player_obj.size * old_player_obj.size, size_scalar));
 		auto &v0 = *vcvertptr(seg.verts[segment_relative_vertnum::_0]);
-		uint8_t capacity_flag = 0;
+		sidemask_t capacity_flag{};
 		if (vm_vec_dist2(v0, vcvertptr(seg.verts[segment_relative_vertnum::_1])) > size2)
 			capacity_flag |= capacity_x;
 		if (vm_vec_dist2(v0, vcvertptr(seg.verts[segment_relative_vertnum::_3])) > size2)
@@ -294,45 +340,17 @@ static unsigned generate_extra_starts_by_displacement_within_segment(const unsig
 		if (vm_vec_dist2(v0, vcvertptr(seg.verts[segment_relative_vertnum::_4])) > size2)
 			capacity_flag |= capacity_z;
 		player_init_segment_capacity_flag[i] = capacity_flag;
-		con_printf(CON_NORMAL, "Original player %u has size %u, starts in segment #%hu, and has segment capacity flags %x.", i, old_player_obj.size, static_cast<segnum_t>(segnum), capacity_flag);
-		if (capacity_flag)
+		con_printf(CON_NORMAL, "Original player %u has size %u, starts in segment #%hu, and has segment capacity flags %x.", i, old_player_obj.size, static_cast<segnum_t>(segnum), underlying_value(capacity_flag));
+		if (capacity_flag != sidemask_t{})
 			++segments_with_spare_capacity;
 	}
 	if (!segments_with_spare_capacity)
+		/* Every segment checked was too small to add an extra start.  Give up
+		 * early.
+		 */
 		return preplaced_starts;
-	unsigned k = preplaced_starts;
-	for (unsigned old_player_idx = -1, side = WRIGHT; ++ old_player_idx != preplaced_starts || (old_player_idx = 0, side ++ != WBACK);)
-	{
-		auto &old_player_ref = *Players.vcptr(old_player_idx);
-		const auto &&old_player_ptridx = Objects.vcptridx(old_player_ref.objnum);
-		auto &old_player_obj = *old_player_ptridx;
-		if (player_init_segment_capacity_flag[old_player_idx] & (1 << side))
-		{
-			auto &&segp = vmsegptridx(old_player_obj.segnum);
-			/* Copy the start exactly.  The next loop will fix the
-			 * collisions caused by placing the clone on top of the
-			 * original.
-			 *
-			 * Currently, there is no handling for the case that the
-			 * level author already put two players too close together.
-			 * If this is a problem, more logic can be added to suppress
-			 * cloning in that case.
-			 */
-			const auto &&extra_player_ptridx = obj_create_copy(old_player_obj, segp);
-			if (extra_player_ptridx == object_none)
-			{
-				con_printf(CON_URGENT, "%s:%u: warning: failed to copy start object %hu", __FILE__, __LINE__, old_player_ptridx.get_unchecked_index());
-				continue;
-			}
-			Players.vmptr(k)->objnum = extra_player_ptridx;
-			auto &extra_player_obj = *extra_player_ptridx;
-			set_player_id(extra_player_obj, k);
-			con_printf(CON_NORMAL, "Copied player %u (object %hu at {%i, %i, %i}) to create player %u (object %hu).", old_player_idx, old_player_ptridx.get_unchecked_index(), old_player_obj.pos.x, old_player_obj.pos.y, old_player_obj.pos.z, k, extra_player_ptridx.get_unchecked_index());
-			if (++ k >= total_required_num_starts)
-				break;
-		}
-	}
-	for (unsigned old_player_idx = 0; old_player_idx < preplaced_starts; ++old_player_idx)
+	unsigned k = generate_extra_starts_by_copying(Objects, Players, Segments, preplaced_start_range, player_init_segment_capacity_flag, total_required_num_starts, preplaced_starts);
+	for (const auto old_player_idx : preplaced_start_range)
 	{
 		auto &old_player_init = Player_init[old_player_idx];
 		const auto old_player_pos = old_player_init.pos;
@@ -344,27 +362,24 @@ static unsigned generate_extra_starts_by_displacement_within_segment(const unsig
 		 * the center of that side and the reference player's start
 		 * point.  This will be used in the next loop.
 		 */
-		for (unsigned side = WRIGHT; side != WBACK + 1; ++side)
+		for (auto &&[side, displacement] : zip(displacement_sides, vec_displacement))
 		{
 			const auto &&center_on_side = compute_center_point_on_side(vcvertptr, seg, side);
-			const auto &&vec_pos_to_center_on_side = vm_vec_sub(center_on_side, old_player_init.pos);
-			const unsigned idxside = side - WRIGHT;
-			assert(idxside < vec_displacement.size());
-			vec_displacement[idxside] = vec_pos_to_center_on_side;
+			displacement = vm_vec_sub(center_on_side, old_player_init.pos);
 		}
 		const auto displace_player = [&](const unsigned plridx, object_base &plrobj, const unsigned displacement_direction) {
 			vms_vector disp{};
 			unsigned dimensions = 0;
-			for (unsigned i = 0, side = WRIGHT; side != WBACK + 1; ++side, ++i)
+			for (const auto &&[i, side] : enumerate(displacement_sides))
 			{
-				if (!(player_init_segment_capacity_flag[old_player_idx] & (1 << side)))
+				if (!(player_init_segment_capacity_flag[old_player_idx] & build_sidemask(side)))
 				{
-					con_printf(CON_NORMAL, "Cannot displace player %u at {%i, %i, %i}: not enough room in dimension %u.", plridx, plrobj.pos.x, plrobj.pos.y, plrobj.pos.z, side);
+					con_printf(CON_NORMAL, "Cannot displace player %u at {%i, %i, %i}: not enough room in dimension %u.", plridx, plrobj.pos.x, plrobj.pos.y, plrobj.pos.z, underlying_value(side));
 					continue;
 				}
 				const auto &v = vec_displacement[i];
 				const auto &va = (displacement_direction & (1 << i)) ? v : vm_vec_negated(v);
-				con_printf(CON_NORMAL, "Add displacement of {%i, %i, %i} for dimension %u for player %u.", va.x, va.y, va.z, side, plridx);
+				con_printf(CON_NORMAL, "Add displacement of {%i, %i, %i} for dimension %u for player %u.", va.x, va.y, va.z, underlying_value(side), plridx);
 				++ dimensions;
 				vm_vec_add2(disp, va);
 			}
@@ -373,9 +388,9 @@ static unsigned generate_extra_starts_by_displacement_within_segment(const unsig
 			vm_vec_normalize(disp);
 			vm_vec_scale(disp, fixmul(old_player_obj.size, size_scalar >> 1));
 			const auto target_position = vm_vec_add(Player_init[plridx].pos, disp);
-			if (const auto sidemask = get_seg_masks(vcvertptr, target_position, vcsegptr(plrobj.segnum), 1).sidemask)
+			if (const auto sidemask = get_seg_masks(vcvertptr, target_position, vcsegptr(plrobj.segnum), 1).sidemask; sidemask != sidemask_t{})
 			{
-				con_printf(CON_NORMAL, "Cannot displace player %u at {%i, %i, %i} to {%i, %i, %i}: would be outside segment for sides %x.", plridx, plrobj.pos.x, plrobj.pos.y, plrobj.pos.z, target_position.x, target_position.y, target_position.z, sidemask);
+				con_printf(CON_NORMAL, "Cannot displace player %u at {%i, %i, %i} to {%i, %i, %i}: would be outside segment for sides %x.", plridx, plrobj.pos.x, plrobj.pos.y, plrobj.pos.z, target_position.x, target_position.y, target_position.z, underlying_value(sidemask));
 				return;
 			}
 			con_printf(CON_NORMAL, "Displace player %u at {%i, %i, %i} by {%i, %i, %i} to {%i, %i, %i}.", plridx, plrobj.pos.x, plrobj.pos.y, plrobj.pos.z, disp.x, disp.y, disp.z, target_position.x, target_position.y, target_position.z);
@@ -402,7 +417,12 @@ static unsigned generate_extra_starts_by_displacement_within_segment(const unsig
 }
 
 //added 10/12/95: delete buddy bot if coop game.  Probably doesn't really belong here. -MT
-static void gameseq_init_network_players(object_array &Objects)
+#if defined(DXX_BUILD_DESCENT_I)
+#define gameseq_init_network_players(Robot_info,Objects)	gameseq_init_network_players(Objects)
+#elif defined(DXX_BUILD_DESCENT_II)
+#undef gameseq_init_network_players
+#endif
+static void gameseq_init_network_players(const d_robot_info_array &Robot_info, object_array &Objects)
 {
 
 	// Initialize network player start locations and object numbers
@@ -414,7 +434,6 @@ static void gameseq_init_network_players(object_array &Objects)
 	const auto remove_thief = Netgame.ThiefModifierFlags & ThiefModifier::Absent;
 	const auto multiplayer = Game_mode & GM_MULTI;
 	const auto retain_guidebot = Netgame.AllowGuidebot;
-	auto &Robot_info = LevelSharedRobotInfoState.Robot_info;
 #endif
 	auto &vmobjptridx = Objects.vmptridx;
 	range_for (const auto &&o, vmobjptridx)
@@ -448,7 +467,7 @@ static void gameseq_init_network_players(object_array &Objects)
 			if ((!retain_guidebot && robot_is_companion(ri)) ||
 				(remove_thief && robot_is_thief(ri)))
 			{
-				object_create_robot_egg(o);
+				object_create_robot_egg(Robot_info, o);
 				obj_delete(LevelUniqueObjectState, Segments, o);		//kill the buddy in netgames
 			}
 		}
@@ -475,7 +494,7 @@ static void gameseq_init_network_players(object_array &Objects)
 
 }
 
-void gameseq_remove_unused_players()
+void gameseq_remove_unused_players(const d_robot_info_array &Robot_info)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vmobjptridx = Objects.vmptridx;
@@ -485,7 +504,7 @@ void gameseq_remove_unused_players()
 	{
 		for (unsigned i = 0; i < NumNetPlayerPositions; ++i)
 		{
-			if ((!vcplayerptr(i)->connected) || (i >= N_players))
+			if (vcplayerptr(i)->connected == player_connection_status::disconnected || i >= N_players)
 			{
 				multi_make_player_ghost(i);
 			}
@@ -498,7 +517,6 @@ void gameseq_remove_unused_players()
 			obj_delete(LevelUniqueObjectState, Segments, vmobjptridx(i.objnum));
 		}
 #if defined(DXX_BUILD_DESCENT_II)
-		auto &Robot_info = LevelSharedRobotInfoState.Robot_info;
 		if (PlayerCfg.ThiefModifierFlags & ThiefModifier::Absent)
 		{
 			range_for (const auto &&o, vmobjptridx)
@@ -509,7 +527,7 @@ void gameseq_remove_unused_players()
 					auto &ri = Robot_info[get_robot_id(o)];
 					if (robot_is_thief(ri))
 					{
-						object_create_robot_egg(o);
+						object_create_robot_egg(Robot_info, o);
 						obj_delete(LevelUniqueObjectState, Segments, o);
 					}
 				}
@@ -673,7 +691,8 @@ void init_player_stats_new_ship(const playernum_t pnum)
 		? MAX_OMEGA_CHARGE
 		: 0;
 	player_info.Omega_recharge_delay = 0;
-	player_info.hoard.orbs = 0;
+	if (game_mode_hoard())
+		player_info.hoard.orbs = 0;
 #endif
 	player_info.powerup_flags |= map_granted_flags_to_player_flags(GrantedItems);
 	DXX_MAKE_VAR_UNDEFINED(player_info.cloak_time);
@@ -873,14 +892,14 @@ void create_player_appearance_effect(const d_vclip_array &Vclip, const object_ba
 		: player_obj.pos;
 
 	const auto &&seg = vmsegptridx(player_obj.segnum);
-	const auto &&effect_obj = object_create_explosion(seg, pos, player_obj.size, VCLIP_PLAYER_APPEARANCE);
+	const auto &&effect_obj = object_create_explosion_without_damage(Vclip, seg, pos, player_obj.size, VCLIP_PLAYER_APPEARANCE);
 
 	if (effect_obj) {
 		effect_obj->orient = player_obj.orient;
 
 		const auto sound_num = Vclip[VCLIP_PLAYER_APPEARANCE].sound_num;
 		if (sound_num > -1)
-			digi_link_sound_to_pos(sound_num, seg, 0, effect_obj->pos, 0, F0_5);
+			digi_link_sound_to_pos(sound_num, seg, sidenum_t::WLEFT, effect_obj->pos, 0, F0_5);
 	}
 }
 }
@@ -955,10 +974,10 @@ static ushort netmisc_calc_checksum()
 				do_checksum_calc(reinterpret_cast<uint8_t *>(&t), 4, &sum1, &sum2);
 			}
 		}
-		range_for (auto &j, i.s.children)
+		for (const typename std::underlying_type<segnum_t>::type j : i.s.children)
 		{
-			s = INTEL_SHORT(j);
-			do_checksum_calc(reinterpret_cast<uint8_t *>(&s), 2, &sum1, &sum2);
+			const auto s = INTEL_SHORT(j);
+			do_checksum_calc(reinterpret_cast<const uint8_t *>(&s), 2, &sum1, &sum2);
 		}
 		range_for (const auto vn, i.s.verts)
 		{
@@ -1045,7 +1064,7 @@ void LoadLevel(int level_num,int page_in_textures)
 
 	Current_level_num=level_num;
 
-	load_palette(Current_level_palette,1,1);		//don't change screen
+	load_palette(Current_level_palette.line(), 1, 1);		//don't change screen
 #endif
 
 #if DXX_USE_EDITOR
@@ -1093,7 +1112,7 @@ void LoadLevel(int level_num,int page_in_textures)
 		piggy_load_level_data();
 #endif
 
-	gameseq_init_network_players(Objects);
+	gameseq_init_network_players(LevelSharedRobotInfoState.Robot_info, Objects);
 	p.restore(vmobjptr);
 }
 }
@@ -1200,20 +1219,30 @@ static void DoEndLevelScoreGlitz()
 
 	const auto Difficulty_level = GameUniqueState.Difficulty_level;
 	if (!cheats.enabled) {
-		if (Difficulty_level > 1) {
+		const auto d = underlying_value(Difficulty_level);
+		switch (Difficulty_level)
+		{
+			default:
+			case Difficulty_level_type::_0:
+			case Difficulty_level_type::_1:
+				skill_points = 0;
+				break;
+			case Difficulty_level_type::_2:
+			case Difficulty_level_type::_3:
+			case Difficulty_level_type::_4:
 #if defined(DXX_BUILD_DESCENT_I)
-			skill_points = level_points*(Difficulty_level-1)/2;
+				skill_points = level_points * (d - 1) / 2;
 #elif defined(DXX_BUILD_DESCENT_II)
-			skill_points = level_points*(Difficulty_level)/4;
+				skill_points = level_points * d / 4;
 #endif
-			skill_points -= skill_points % 100;
-		} else
-			skill_points = 0;
+				skill_points -= skill_points % 100;
+				break;
+		}
 
-		hostage_points = player_info.mission.hostages_on_board * 500 * (Difficulty_level+1);
+		hostage_points = player_info.mission.hostages_on_board * 500 * (d + 1);
 #if defined(DXX_BUILD_DESCENT_I)
-		shield_points = f2i(plrobj.shields) * 10 * (Difficulty_level+1);
-		energy_points = f2i(player_info.energy) * 5 * (Difficulty_level+1);
+		shield_points = f2i(plrobj.shields) * 10 * (d + 1);
+		energy_points = f2i(player_info.energy) * 5 * (d + 1);
 #elif defined(DXX_BUILD_DESCENT_II)
 		shield_points = f2i(plrobj.shields) * 5 * mine_level;
 		energy_points = f2i(player_info.energy) * 2 * mine_level;
@@ -1243,11 +1272,14 @@ static void DoEndLevelScoreGlitz()
 	auto &hostage_text = m_str[c++];
 	if (cheats.enabled)
 		snprintf(hostage_text, sizeof(hostage_text), "Hostages saved:   \t%u", hostages_on_board);
-	else if (const auto hostages_lost = LevelUniqueObjectState.total_hostages - hostages_on_board)
+	else if (LevelUniqueObjectState.total_hostages > hostages_on_board)
+	{
+		const auto hostages_lost = LevelUniqueObjectState.total_hostages - hostages_on_board;
 		snprintf(hostage_text, sizeof(hostage_text), "Hostages lost:    \t%u", hostages_lost);
+	}
 	else
 	{
-		all_hostage_points = hostages_on_board * 1000 * (Difficulty_level + 1);
+		all_hostage_points = hostages_on_board * 1000 * (underlying_value(Difficulty_level) + 1);
 		snprintf(hostage_text, sizeof(hostage_text), "%s%i\n", TXT_FULL_RESCUE_BONUS, all_hostage_points);
 	}
 
@@ -1282,7 +1314,7 @@ static void DoEndLevelScoreGlitz()
 
 	struct glitz_menu : passive_newmenu
 	{
-		glitz_menu(grs_canvas &canvas, menu_subtitle subtitle, partial_range_t<newmenu_item *> items) :
+		glitz_menu(grs_canvas &canvas, menu_subtitle subtitle, const ranges::subrange<newmenu_item *> items) :
 			passive_newmenu(menu_title{nullptr}, subtitle, menu_filename{GLITZ_BACKGROUND}, tiny_mode_flag::normal, tab_processing_flag::ignore, adjusted_citem::create(items, 0), canvas, draw_box_flag::none)
 		{
 		}
@@ -1397,7 +1429,7 @@ static void StartNewLevelSecret(int level_num, int page_in_textures)
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vmobjptr = Objects.vmptr;
 
-	last_drawn_cockpit = -1;
+	last_drawn_cockpit = cockpit_mode_t{UINT8_MAX};
 
 	if (Newdemo_state == ND_STATE_PAUSED)
 		Newdemo_state = ND_STATE_RECORDING;
@@ -1431,7 +1463,7 @@ static void StartNewLevelSecret(int level_num, int page_in_textures)
 
 	Viewer = &get_local_plrobj();
 
-	gameseq_remove_unused_players();
+	gameseq_remove_unused_players(LevelSharedRobotInfoState.Robot_info);
 
 	Game_suspended = 0;
 
@@ -1442,9 +1474,9 @@ static void StartNewLevelSecret(int level_num, int page_in_textures)
 
 	if (First_secret_visit || (Newdemo_state == ND_STATE_PLAYBACK)) {
 		init_robots_for_level();
-		init_ai_objects();
+		init_ai_objects(LevelSharedRobotInfoState.Robot_info);
 		init_smega_detonates();
-		init_morphs();
+		init_morphs(LevelUniqueObjectState.MorphObjectState);
 		init_all_matcens();
 		reset_special_effects();
 		StartSecretLevel();
@@ -1467,10 +1499,10 @@ static void StartNewLevelSecret(int level_num, int page_in_textures)
 	}
 
 	if (First_secret_visit) {
-		copy_defaults_to_robot_all();
+		copy_defaults_to_robot_all(LevelSharedRobotInfoState.Robot_info);
 	}
 
-	init_controlcen_for_level();
+	init_controlcen_for_level(LevelSharedRobotInfoState.Robot_info);
 
 	// Say player can use FLASH cheat to mark path to exit.
 	LevelUniqueObjectState.Level_path_created = 0;
@@ -1633,7 +1665,11 @@ void EnterSecretLevel(void)
 #endif
 
 //called when the player has finished a level
-window_event_result PlayerFinishedLevel(int secret_flag)
+window_event_result (PlayerFinishedLevel)(
+#if defined(DXX_BUILD_DESCENT_I)
+	const next_level_request_secret_flag secret_flag
+#endif
+	)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vmobjptr = Objects.vmptr;
@@ -1645,7 +1681,7 @@ window_event_result PlayerFinishedLevel(int secret_flag)
 	auto &player_info = get_local_plrobj().ctype.player_info;
 	player_info.mission.hostages_rescued_total += player_info.mission.hostages_on_board;
 #if defined(DXX_BUILD_DESCENT_I)
-	if (!(Game_mode & GM_MULTI) && (secret_flag)) {
+	if (!(Game_mode & GM_MULTI) && secret_flag != next_level_request_secret_flag::only_normal_level) {
 		using items_type = std::array<newmenu_item, 1>;
 		struct message_menu : items_type, passive_newmenu
 		{
@@ -1660,12 +1696,12 @@ window_event_result PlayerFinishedLevel(int secret_flag)
 		run_blocking_newmenu<message_menu>(*grd_curcanv);
 	}
 #elif defined(DXX_BUILD_DESCENT_II)
-	Assert(!secret_flag);
+	constexpr auto secret_flag = next_level_request_secret_flag::only_normal_level;
 #endif
 	if (Game_mode & GM_NETWORK)
-		get_local_player().connected = CONNECT_WAITING; // Finished but did not die
+		get_local_player().connected = player_connection_status::waiting; // Finished but did not die
 
-	last_drawn_cockpit = -1;
+	last_drawn_cockpit = cockpit_mode_t{UINT8_MAX};
 
 	auto result = AdvanceLevel(secret_flag);				//now go on to the next one (if one)
 
@@ -1698,7 +1734,7 @@ static void DoEndGame()
 	if (PLAYING_BUILTIN_MISSION && !(Game_mode & GM_MULTI))
 	{ //only built-in mission, & not multi
 #if defined(DXX_BUILD_DESCENT_II)
-		auto played = PlayMovie(ENDMOVIE ".tex", ENDMOVIE ".mve",MOVIE_REQUIRED);
+		auto played = PlayMovie(ENDMOVIE ".tex", ENDMOVIE ".mve", play_movie_warn_missing::urgent);
 		if (played == movie_play_status::skipped)
 #endif
 		{
@@ -1737,14 +1773,16 @@ static void DoEndGame()
 //called to go to the next level (if there is one)
 //if secret_flag is true, advance to secret level, else next normal one
 //	Return true if game over.
-static window_event_result AdvanceLevel(int secret_flag)
+static window_event_result (AdvanceLevel)(
+#if defined(DXX_BUILD_DESCENT_I)
+	next_level_request_secret_flag secret_flag
+#endif
+	)
 {
 	auto &LevelUniqueControlCenterState = LevelUniqueObjectState.ControlCenterState;
 	auto rval = window_event_result::handled;
 
 #if defined(DXX_BUILD_DESCENT_II)
-	Assert(!secret_flag);
-
 	// Loading a level can write over homing_flag.
 	// So for simplicity, reset the homing weapon cheat here.
 	if (cheats.homingfire)
@@ -1771,7 +1809,11 @@ static window_event_result AdvanceLevel(int secret_flag)
 	if (Game_mode & GM_MULTI)
 	{
 		int result;
-		result = multi::dispatch->end_current_level(&secret_flag); // Wait for other players to reach this point
+		result = multi::dispatch->end_current_level(
+#if defined(DXX_BUILD_DESCENT_I)
+			&secret_flag
+#endif
+			); // Wait for other players to reach this point
 		if (result) // failed to sync
 		{
 			// check if player has finished the game
@@ -1851,7 +1893,7 @@ window_event_result DoPlayerDead()
 		player_info.mission.hostages_on_board = 0;
 		player_info.energy = 0;
 		plrobj.shields = 0;
-		plr.connected = CONNECT_DIED_IN_MINE;
+		plr.connected = player_connection_status::died_in_mine;
 
 		do_screen_message(TXT_DIED_IN_MINE); // Give them some indication of what happened
 #if defined(DXX_BUILD_DESCENT_II)
@@ -1881,10 +1923,10 @@ window_event_result DoPlayerDead()
 					const auto g = Game_wind;
 					if (g)
 						g->set_visible(0);
-			result = AdvanceLevel(0);			//if finished, go on to next level
+			result = AdvanceLevel(next_level_request_secret_flag::only_normal_level);			//if finished, go on to next level
 
 			init_player_stats_new_ship(Player_num);
-			last_drawn_cockpit = -1;
+			last_drawn_cockpit = cockpit_mode_t{UINT8_MAX};
 			if (g)
 				g->set_visible(1);
 		}
@@ -1929,16 +1971,16 @@ window_event_result DoPlayerDead()
 //called when the player is starting a new level for normal game mode and restore state
 //	secret_flag set if came from a secret level
 #if defined(DXX_BUILD_DESCENT_I)
-window_event_result StartNewLevelSub(const int level_num, const int page_in_textures)
+window_event_result StartNewLevelSub(const d_robot_info_array &Robot_info, const int level_num, const int page_in_textures)
 #elif defined(DXX_BUILD_DESCENT_II)
-window_event_result StartNewLevelSub(const int level_num, const int page_in_textures, const secret_restore secret_flag)
+window_event_result StartNewLevelSub(const d_robot_info_array &Robot_info, const int level_num, const int page_in_textures, const secret_restore secret_flag)
 #endif
 {
 	auto &LevelUniqueControlCenterState = LevelUniqueObjectState.ControlCenterState;
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vmobjptr = Objects.vmptr;
 	if (!(Game_mode & GM_MULTI)) {
-		last_drawn_cockpit = -1;
+		last_drawn_cockpit = cockpit_mode_t{UINT8_MAX};
 	}
 #if defined(DXX_BUILD_DESCENT_I)
 	static constexpr std::integral_constant<secret_restore, secret_restore::none> secret_flag{};
@@ -1987,7 +2029,7 @@ window_event_result StartNewLevelSub(const int level_num, const int page_in_text
 #if defined(DXX_BUILD_DESCENT_I)
 	gr_use_palette_table( "palette.256" );
 #elif defined(DXX_BUILD_DESCENT_II)
-	load_palette(Current_level_palette,0,1);
+	load_palette(Current_level_palette.line(), 0, 1);
 #endif
 	gr_palette_load(gr_palette);
 
@@ -2005,7 +2047,7 @@ window_event_result StartNewLevelSub(const int level_num, const int page_in_text
 		multi_prep_level_player();
 	}
 
-	gameseq_remove_unused_players();
+	gameseq_remove_unused_players(Robot_info);
 
 	Game_suspended = 0;
 
@@ -2017,8 +2059,8 @@ window_event_result StartNewLevelSub(const int level_num, const int page_in_text
 
 	init_cockpit();
 	init_robots_for_level();
-	init_ai_objects();
-	init_morphs();
+	init_ai_objects(Robot_info);
+	init_morphs(LevelUniqueObjectState.MorphObjectState);
 	init_all_matcens();
 	reset_palette_add();
 	LevelUniqueStuckObjectState.init_stuck_objects();
@@ -2049,8 +2091,8 @@ window_event_result StartNewLevelSub(const int level_num, const int page_in_text
 	else
 		StartLevel(0);		// Note link to above if!
 
-	copy_defaults_to_robot_all();
-	init_controlcen_for_level();
+	copy_defaults_to_robot_all(Robot_info);
+	init_controlcen_for_level(Robot_info);
 
 	//	Say player can use FLASH cheat to mark path to exit.
 	LevelUniqueObjectState.Level_path_created = 0;
@@ -2117,7 +2159,7 @@ static void ShowLevelIntro(int level_num)
 					if (i.level_num == level_num)
 					{
 						Screen_mode = -1;
-						PlayMovie(NULL, i.movie_name, MOVIE_REQUIRED);
+						PlayMovie({}, i.movie_name, play_movie_warn_missing::urgent);
 						break;
 					}
 				}
@@ -2176,7 +2218,7 @@ window_event_result StartNewLevel(int level_num)
 	ShowLevelIntro(level_num);
 #endif
 
-	return StartNewLevelSub(level_num, 1, secret_restore::none);
+	return StartNewLevelSub(LevelSharedRobotInfoState.Robot_info, level_num, 1, secret_restore::none);
 
 }
 
@@ -2186,7 +2228,7 @@ class respawn_locations
 {
 	typedef std::pair<int, fix> site;
 	unsigned max_usable_spawn_sites;
-	std::array<site, MAX_PLAYERS> sites;
+	per_player_array<site> sites;
 public:
 	respawn_locations(fvmobjptr &vmobjptr, fvcsegptridx &vcsegptridx)
 	{
@@ -2208,7 +2250,7 @@ public:
 			return closest_dist;
 		};
 		const auto max_spawn_sites = std::min<unsigned>(NumNetPlayerPositions, sites.size());
-		for (uint_fast32_t i = max_spawn_sites; i--;)
+		for (playernum_t i = max_spawn_sites; i--;)
 		{
 			auto &s = sites[i];
 			s.first = i;
@@ -2233,7 +2275,7 @@ public:
 	{
 		return max_usable_spawn_sites;
 	}
-	const site &operator[](std::size_t i) const
+	const site &operator[](const playernum_t i) const
 	{
 		return sites[i];
 	}
@@ -2267,7 +2309,7 @@ static void InitPlayerPosition(fvmobjptridx &vmobjptridx, fvmsegptridx &vmsegptr
 	}
 	else {
 		// If deathmatch and not random, positions were already determined by sync packet
-		reset_player_object();
+		reset_player_object(*ConsoleObject);
 		return;
 	}
 	Assert(NewPlayer >= 0);
@@ -2275,7 +2317,7 @@ static void InitPlayerPosition(fvmobjptridx &vmobjptridx, fvmsegptridx &vmsegptr
 	ConsoleObject->pos = Player_init[NewPlayer].pos;
 	ConsoleObject->orient = Player_init[NewPlayer].orient;
 	obj_relink(vmobjptr, vmsegptr, vmobjptridx(ConsoleObject), vmsegptridx(Player_init[NewPlayer].segnum));
-	reset_player_object();
+	reset_player_object(*ConsoleObject);
 }
 
 }
@@ -2283,13 +2325,11 @@ static void InitPlayerPosition(fvmobjptridx &vmobjptridx, fvmsegptridx &vmsegptr
 //	-----------------------------------------------------------------------------------------------------
 //	Initialize default parameters for one robot, copying from Robot_info to *objp.
 //	What about setting size!?  Where does that come from?
-void copy_defaults_to_robot(object_base &objp)
+void copy_defaults_to_robot(const d_robot_info_array &Robot_info, object_base &objp)
 {
 	assert(objp.type == OBJ_ROBOT);
 	const unsigned objid = get_robot_id(objp);
-	assert(objid < LevelSharedRobotInfoState.N_robot_types);
 
-	auto &Robot_info = LevelSharedRobotInfoState.Robot_info;
 	auto &robptr = Robot_info[objid];
 
 	//	Boost shield for Thief and Buddy based on level.
@@ -2303,16 +2343,22 @@ void copy_defaults_to_robot(object_base &objp)
 		if (robot_is_companion(robptr)) {
 			//	Now, scale guide-bot hits by skill level
 			switch (Difficulty_level) {
-				case 0:	shields = i2f(20000);	break;		//	Trainee, basically unkillable
-				case 1:	shields *= 3;				break;		//	Rookie, pretty dang hard
-				case 2:	shields *= 2;				break;		//	Hotshot, a bit tough
+				case Difficulty_level_type::_0:
+					shields = i2f(20000);
+					break;		//	Trainee, basically unkillable
+				case Difficulty_level_type::_1:
+					shields *= 3;
+					break;		//	Rookie, pretty dang hard
+				case Difficulty_level_type::_2:
+					shields *= 2;
+					break;		//	Hotshot, a bit tough
 				default:	break;
 			}
 		}
 	} else if (robptr.boss_flag)	//	MK, 01/16/95, make boss shields lower on lower diff levels.
 	{
 	//	Additional wimpification of bosses at Trainee
-		shields = shields / (NDL + 3) * (Difficulty_level ? Difficulty_level + 4 : 2);
+		shields = shields / (NDL + 3) * (Difficulty_level != Difficulty_level_type::_0 ? underlying_value(Difficulty_level) + 4 : 2);
 	}
 #endif
 	objp.shields = shields;
@@ -2324,14 +2370,14 @@ namespace {
 //	Copy all values from the robot info structure to all instances of robots.
 //	This allows us to change bitmaps.tbl and have these changes manifested in existing robots.
 //	This function should be called at level load time.
-static void copy_defaults_to_robot_all(void)
+static void copy_defaults_to_robot_all(const d_robot_info_array &Robot_info)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vmobjptr = Objects.vmptr;
 	range_for (object_base &objp, vmobjptr)
 	{
 		if (objp.type == OBJ_ROBOT)
-			copy_defaults_to_robot(objp);
+			copy_defaults_to_robot(Robot_info, objp);
 	}
 }
 

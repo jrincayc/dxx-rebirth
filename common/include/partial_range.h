@@ -14,6 +14,7 @@
 #include "fwd-partial_range.h"
 #include <memory>
 #include "dxxsconf.h"
+#include "backports-ranges.h"
 
 /* If no value was specified for DXX_PARTIAL_RANGE_MINIMIZE_ERROR_TYPE,
  * then define it to true for NDEBUG builds and false for debug builds.
@@ -73,25 +74,6 @@ void prepare_error_string(std::array<char, N> &buf, unsigned long d, const char 
 }
 #undef REPORT_FORMAT_STRING
 
-/*
- * These are placed out of line from the class and used as an
- * indirection, so that the compiler can pick std::begin/std::end or ADL
- * appropriate alternatives, if they exist.
- */
-template <typename T>
-inline auto adl_begin(T &t)
-{
-	using std::begin;
-	return begin(t);
-}
-
-template <typename T>
-inline auto adl_end(T &t)
-{
-	using std::end;
-	return end(t);
-}
-
 template <typename>
 void range_index_type(...);
 
@@ -100,12 +82,15 @@ template <
 	/* If `range_type::index_type` is not defined, fail.
 	 * If `range_type::index_type` is void, fail.
 	 */
-	typename index_type = typename std::remove_reference<typename std::remove_reference<range_type>::type::index_type &>::type,
+	typename index_type = typename std::remove_reference<typename std::remove_reference<range_type>::type::index_type &>::type>
 	/* If `range_type::index_type` is not a suitable argument to
 	 * range_type::operator[](), fail.
 	 */
-	typename = decltype(std::declval<range_type &>().operator[](std::declval<index_type>()))
-	>
+	requires(
+		requires(range_type &r, index_type i) {
+			r.operator[](i);
+		}
+	)
 index_type range_index_type(std::nullptr_t);
 
 }
@@ -115,11 +100,11 @@ struct partial_range_error;
 #endif
 
 template <typename range_iterator, typename range_index_type>
-class partial_range_t
+class partial_range_t : ranges::subrange<range_iterator>
 {
+	using base_type = ranges::subrange<range_iterator>;
 public:
 	static_assert(!std::is_reference<range_iterator>::value);
-	using range_owns_iterated_storage = std::false_type;
 	using iterator = range_iterator;
 	using index_type = range_index_type;
 	/* When using the unminimized type, forward declare a structure.
@@ -135,59 +120,23 @@ public:
 	using partial_range_error =
 #endif
 	struct partial_range_error;
-	iterator m_begin, m_end;
-	partial_range_t(iterator b, iterator e) :
-		m_begin(b), m_end(e)
-	{
-	}
+	using base_type::base_type;
 	partial_range_t(const partial_range_t &) = default;
 	partial_range_t(partial_range_t &&) = default;
 	partial_range_t &operator=(const partial_range_t &) = default;
-	template <typename T>
-		partial_range_t(T &&t) :
-			m_begin(partial_range_detail::adl_begin(t)), m_end(partial_range_detail::adl_end(t))
-	{
-		/* If `T &&`, after reference collapsing, is an lvalue
-		 * reference, then the object referenced by `t` will remain in
-		 * scope after the statement that called this constructor, and
-		 * there is no need to check whether the object `t` owns the
-		 * iterated range.
-		 *
-		 * Otherwise, if `t` is an rvalue reference, assert that `t` is
-		 * a view onto a range, rather than owning the range.  A `t`
-		 * that owns the storage would leave the iterators dangling.
-		 *
-		 * These checks are not precise.  It is possible to have a type
-		 * T that remains in scope, but frees its storage early, and
-		 * leaves the range dangling.  It is possible to have a type T
-		 * that owns the storage, and is not destroyed after the
-		 * containing statement terminates.  Neither are good designs,
-		 * and neither can be handled here.  These checks attempt to
-		 * catch obvious mistakes.
-		 */
-		if constexpr (!std::is_lvalue_reference<T &&>::value)
-			static_assert(!T::range_owns_iterated_storage::value, "rvalue reference to range requires that the range is a view, not an owner");
-	}
-	[[nodiscard]]
-	iterator begin() const { return m_begin; }
-	[[nodiscard]]
-	iterator end() const { return m_end; }
-	[[nodiscard]]
-	bool empty() const
-	{
-		return m_begin == m_end;
-	}
-	[[nodiscard]]
-	std::size_t size() const { return std::distance(m_begin, m_end); }
+	using base_type::begin;
+	using base_type::end;
+	using base_type::empty;
+	using base_type::size;
 	[[nodiscard]]
 	std::reverse_iterator<iterator> rbegin() const
 	{
-		return std::reverse_iterator<iterator>{m_end};
+		return std::reverse_iterator<iterator>{end()};
 	}
 	[[nodiscard]]
 	std::reverse_iterator<iterator> rend() const
 	{
-		return std::reverse_iterator<iterator>{m_begin};
+		return std::reverse_iterator<iterator>{begin()};
 	}
 	[[nodiscard]]
 	partial_range_t<std::reverse_iterator<iterator>, index_type> reversed() const
@@ -195,6 +144,9 @@ public:
 		return {rbegin(), rend()};
 	}
 };
+
+template <typename range_iterator, typename range_index_type>
+inline constexpr bool std::ranges::enable_borrowed_range<partial_range_t<range_iterator, range_index_type>> = std::ranges::enable_borrowed_range<::ranges::subrange<range_iterator>>;
 
 #if DXX_PARTIAL_RANGE_MINIMIZE_ERROR_TYPE
 struct partial_range_error
@@ -248,7 +200,7 @@ inline void check_range_bounds(const char *file, unsigned line, const char *estr
 	 * not define DXX_CONSTANT_TRUE and the macro expands to nothing.
 	 */
 #define PARTIAL_RANGE_COMPILE_CHECK_BOUND(EXPR,S)	\
-	(DXX_CONSTANT_TRUE(EXPR > d) && (DXX_ALWAYS_ERROR_FUNCTION(partial_range_will_always_throw_##S, #S " will always throw"), 0))
+	(DXX_CONSTANT_TRUE(EXPR > d) && (DXX_ALWAYS_ERROR_FUNCTION(#S " will always throw"), 0))
 #else
 #define PARTIAL_RANGE_COMPILE_CHECK_BOUND(EXPR,S)	static_cast<void>(0)
 #endif
@@ -293,6 +245,46 @@ template <typename range_exception, std::size_t required_buffer_size, typename P
 void check_range_object_size(const char *, unsigned, const char *, const P &&, std::size_t, std::size_t) {}
 #endif
 
+/* If no range_type::index_type is defined, then allow any index type. */
+std::true_type check_range_index_type_vs_provided_index_type(...);
+
+template <
+	typename range_type,
+	typename provided_index_type,
+	/* If `range_type::index_type` is not defined, fail.
+	 * If `range_type::index_type` is void, fail.
+	 */
+	typename range_index_type = typename std::remove_reference<typename range_type::index_type &>::type
+	>
+std::is_same<provided_index_type, range_index_type> check_range_index_type_vs_provided_index_type(const range_type *, const provided_index_type *);
+
+template <typename range_type, typename index_type>
+requires(std::is_enum<index_type>::value)
+std::size_t cast_index_to_size(const index_type i)
+{
+	static_assert(std::is_unsigned<typename std::underlying_type<index_type>::type>::value, "underlying_type of index_type must be unsigned");
+	/* If an enumerated index type is used, require that it be the type that
+	 * the underlying range uses.
+	 */
+	static_assert(decltype(check_range_index_type_vs_provided_index_type(static_cast<typename std::remove_reference<range_type>::type *>(nullptr), static_cast<index_type *>(nullptr)))::value);
+	return static_cast<std::size_t>(i);
+}
+
+template <typename range_type, typename index_type>
+requires(std::is_integral<index_type>::value)
+std::size_t cast_index_to_size(const index_type i)
+{
+	static_assert(std::is_unsigned<index_type>::value, "integral index_type must be unsigned");
+	/* Omit enforcement of range_type::index_type vs index_type, since many
+	 * call sites provide numeric length limits.
+	static_assert(decltype(check_range_index_type_vs_provided_index_type<range_type, index_type>(nullptr))::value);
+	 */
+	/* Use an implicit conversion, so that an index_type of std::size_t does
+	 * not cause a useless cast.
+	 */
+	return i;
+}
+
 }
 
 template <
@@ -316,7 +308,7 @@ inline partial_range_t<iterator_type, index_type> unchecked_partial_range_advanc
 	 * likely indicates a bug.
 	 */
 	if (DXX_CONSTANT_TRUE(!(index_begin < index_end)))
-		DXX_ALWAYS_ERROR_FUNCTION(partial_range_is_always_empty, "offset never less than length");
+		DXX_ALWAYS_ERROR_FUNCTION("offset never less than length");
 #endif
 #ifdef DXX_HAVE_BUILTIN_OBJECT_SIZE
 	/* Avoid iterator dereference if range is empty */
@@ -360,9 +352,6 @@ inline auto (unchecked_partial_range)(
 #endif
 	range_type &range, const index_begin_type &index_begin, const index_end_type &index_end)
 {
-	/* Require unsigned length */
-	static_assert(std::is_unsigned<index_begin_type>::value, "offset to partial_range must be unsigned");
-	static_assert(std::is_unsigned<index_end_type>::value, "length to partial_range must be unsigned");
 	static_assert(!std::is_void<reference>::value, "dereference of iterator must not be void");
 	return unchecked_partial_range_advance<
 #ifdef DXX_HAVE_BUILTIN_OBJECT_SIZE
@@ -372,7 +361,9 @@ inline auto (unchecked_partial_range)(
 #ifdef DXX_HAVE_BUILTIN_OBJECT_SIZE
 			file, line, estr,
 #endif
-			std::begin(range), index_begin, index_end
+			std::begin(range),
+			partial_range_detail::cast_index_to_size<range_type, index_begin_type>(index_begin),
+			partial_range_detail::cast_index_to_size<range_type, index_end_type>(index_end)
 		);
 }
 
@@ -462,19 +453,21 @@ template <
 [[nodiscard]]
 inline auto (partial_range)(const char *const file, const unsigned line, const char *const estr, range_type &range, const index_begin_type &index_begin, const index_end_type &index_end)
 {
+	const auto sz_begin = partial_range_detail::cast_index_to_size<range_type, index_begin_type>(index_begin);
+	const auto sz_end = partial_range_detail::cast_index_to_size<range_type, index_end_type>(index_end);
 	partial_range_detail::check_range_bounds<
 		typename partial_range_t<iterator_type, decltype(partial_range_detail::range_index_type<range_type>(nullptr))>::partial_range_error,
 		required_buffer_size
-	>(file, line, estr, reinterpret_cast<uintptr_t>(std::addressof(range)), index_begin, index_end, std::size(range));
+	>(file, line, estr, reinterpret_cast<uintptr_t>(std::addressof(range)), sz_begin, sz_end, std::size(range));
 	return unchecked_partial_range<
 #ifdef DXX_HAVE_BUILTIN_OBJECT_SIZE
 		required_buffer_size,
 #endif
-		range_type, index_begin_type, index_end_type>(
+		range_type>(
 #ifdef DXX_HAVE_BUILTIN_OBJECT_SIZE
 			file, line, estr,
 #endif
-			range, index_begin, index_end
+			range, sz_begin, sz_end
 		);
 }
 

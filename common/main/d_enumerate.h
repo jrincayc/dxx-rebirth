@@ -6,11 +6,9 @@
  */
 #pragma once
 
-#include <inttypes.h>
 #include <iterator>
 #include "dxxsconf.h"
-#include "partial_range.h"
-#include "ephemeral_range.h"
+#include "backports-ranges.h"
 #include <tuple>
 #include <type_traits>
 
@@ -38,10 +36,9 @@ struct adjust_iterator_dereference_type<index_type, std::tuple<T...>> : std::tru
 };
 
 /* Retrieve the member typedef `index_type` if one exists.  Otherwise,
- * use `uint_fast32_t` as a fallback.
+ * use `std::size_t` as a fallback.
  */
-template <typename>
-uint_fast32_t array_index_type(...);
+std::size_t array_index_type(...);
 
 /* Add, then remove, a reference to the `index_type`.  If `index_type`
  * is an integer or enum type, this produces `index_type` again.  If
@@ -53,25 +50,37 @@ uint_fast32_t array_index_type(...);
  * `index_type` based on their template parameters.
  */
 template <typename T>
-typename std::remove_reference<typename std::remove_reference<T>::type::index_type &>::type array_index_type(std::nullptr_t);
+typename std::remove_reference<typename T::index_type &>::type array_index_type(T *);
 
 }
 
 }
 
-template <typename index_type, typename range_iterator_type, typename iterator_dereference_type>
+template <typename sentinel_type>
+class enumerated_sentinel
+{
+public:
+	sentinel_type m_sentinel;
+	constexpr enumerated_sentinel() = default;
+	constexpr enumerated_sentinel(sentinel_type &&iter) :
+		m_sentinel(std::move(iter))
+	{
+	}
+};
+
+template <typename range_index_type, typename range_iterator_type, typename sentinel_type, typename adjust_iterator_dereference_type>
 class enumerated_iterator
 {
 	range_iterator_type m_iter;
-	index_type m_idx;
-	using adjust_iterator_dereference_type = d_enumerate::detail::adjust_iterator_dereference_type<index_type, iterator_dereference_type>;
+	range_index_type m_idx;
 public:
+	using index_type = range_index_type;
 	using iterator_category = std::forward_iterator_tag;
 	using value_type = typename adjust_iterator_dereference_type::value_type;
 	using difference_type = std::ptrdiff_t;
 	using pointer = value_type *;
 	using reference = value_type &;
-	enumerated_iterator(range_iterator_type &&iter, const index_type idx) :
+	constexpr enumerated_iterator(range_iterator_type &&iter, const index_type idx) :
 		m_iter(std::move(iter)), m_idx(idx)
 	{
 	}
@@ -98,48 +107,56 @@ public:
 			++ m_idx;
 		return *this;
 	}
-	bool operator!=(const enumerated_iterator &i) const
+	enumerated_iterator operator++(int)
 	{
-		return m_iter != i.m_iter;
+		auto result = *this;
+		++ * this;
+		return result;
 	}
-	bool operator==(const enumerated_iterator &i) const
+	constexpr bool operator==(const enumerated_sentinel<sentinel_type> &i) const
 	{
-		return m_iter == i.m_iter;
+		return m_iter == i.m_sentinel;
 	}
 };
 
-template <typename range_iterator_type, typename index_type>
-class enumerate : partial_range_t<range_iterator_type>
+template <typename range_iterator_type, typename range_sentinel_type, typename range_index_type>
+class enumerate : ranges::subrange<range_iterator_type, range_sentinel_type>
 {
-	using base_type = partial_range_t<range_iterator_type>;
+	using base_type = ranges::subrange<range_iterator_type, range_sentinel_type>;
 	using iterator_dereference_type = decltype(*std::declval<range_iterator_type>());
 	using enumerated_iterator_type = enumerated_iterator<
-		index_type,
+		range_index_type,
 		range_iterator_type,
-		typename std::remove_cv<iterator_dereference_type>::type>;
-	const index_type m_idx;
+		range_sentinel_type,
+		d_enumerate::detail::adjust_iterator_dereference_type<range_index_type, typename std::remove_cv<iterator_dereference_type>::type>>;
+	const range_index_type m_idx;
 public:
-	using range_owns_iterated_storage = std::false_type;
-	enumerate(const range_iterator_type b, const range_iterator_type e, const index_type i) :
-		base_type(b, e), m_idx(i)
-	{
-	}
+	using index_type = range_index_type;
 	template <typename range_type>
+		/* Block using `enumerate` on an ephemeral range, since the storage
+		 * owned by the range must exist until the `enumerate` object is
+		 * fully consumed.  If `range_type &&` is an ephemeral range, then its
+		 * storage may cease to exist after this constructor returns.
+		 */
+		requires(ranges::borrowed_range<range_type>)
 		enumerate(range_type &&t, const index_type i = index_type{}) :
 			base_type(std::forward<range_type>(t)), m_idx(i)
 	{
-		static_assert(!any_ephemeral_range<range_type &&>::value, "cannot enumerate storage of ephemeral ranges");
-		static_assert(std::is_rvalue_reference<range_type &&>::value || std::is_lvalue_reference<iterator_dereference_type>::value, "lvalue range must produce lvalue reference enumerated_value");
+		static_assert(std::is_rvalue_reference<range_type &&>::value || !std::is_rvalue_reference<iterator_dereference_type>::value, "lvalue range must not produce rvalue reference enumerated_value");
 	}
 	enumerated_iterator_type begin() const
 	{
 		return {this->base_type::begin(), m_idx};
 	}
-	enumerated_iterator_type end() const
+	enumerated_sentinel<range_sentinel_type> end() const
 	{
-		return {this->base_type::end(), index_type{} /* unused */};
+		return {this->base_type::end()};
 	}
 };
 
-template <typename range_type, typename index_type = decltype(d_enumerate::detail::array_index_type<range_type>(nullptr)), typename range_iterator_type = decltype(std::begin(std::declval<range_type &>()))>
-enumerate(range_type &&r, const index_type start = index_type(/* value ignored */)) -> enumerate<range_iterator_type, index_type>;
+template <typename range_iterator_type, typename range_sentinel_type, typename index_type>
+inline constexpr bool std::ranges::enable_borrowed_range<enumerate<range_iterator_type, range_sentinel_type, index_type>> = true;
+
+template <typename range_type, typename index_type = decltype(d_enumerate::detail::array_index_type(static_cast<typename std::remove_reference<range_type>::type *>(nullptr)))>
+requires(ranges::borrowed_range<range_type>)
+enumerate(range_type &&r, index_type start = {/* value ignored for deduction guide */}) -> enumerate</* range_iterator_type = */ decltype(std::ranges::begin(std::declval<range_type &>())), /* range_sentinel_type = */ decltype(std::ranges::end(std::declval<range_type &>())), index_type>;

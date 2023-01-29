@@ -371,7 +371,7 @@ static inline vms_matrix med_create_group_rotation_matrix(const unsigned delta_f
 
 // -----------------------------------------------------------------------------------------
 // Rotate all vertices and objects in group.
-static void med_rotate_group(const vms_matrix &rotmat, group::segment_array_type_t &group_seglist, const shared_segment &first_seg, const unsigned first_side)
+static void med_rotate_group(const vms_matrix &rotmat, group::segment_array_type_t &group_seglist, const shared_segment &first_seg, const sidenum_t first_side)
 {
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
 	auto &Objects = LevelUniqueObjectState.Objects;
@@ -564,7 +564,7 @@ static int med_copy_group(const unsigned delta_flag, const vmsegptridx_t base_se
 	auto gb = GroupList[current_group].segments.begin();
 	auto ge = GroupList[current_group].segments.end();
 	auto gp = Groupsegp[current_group];
-	auto gi = std::find_if(gb, ge, [gp](const segnum_t segnum){ return vcsegptr(segnum) == gp; });
+	const auto &&gi = ranges::find_if(gb, ge, [gp](const segnum_t segnum) { return vcsegptr(segnum) == gp; });
 	int gs_index = (gi == ge) ? 0 : std::distance(gb, gi);
 
 	GroupList[new_current_group] = GroupList[current_group];
@@ -915,7 +915,6 @@ int rotate_segment_new(const vms_angvec &pbh)
 {
 	vms_matrix	tm1;
 	group::segment_array_type_t selected_segs_save;
-	int			child_save;
 	int			current_group_save;
 
         if (!IS_CHILD(Cursegp->children[Side_opposite[Curside]]))
@@ -936,7 +935,7 @@ int rotate_segment_new(const vms_angvec &pbh)
 
 	// Create list of segments to rotate.
 	//	Sever connection between first seg to rotate and its connection on Side_opposite[Curside].
-	child_save = Cursegp->children[newseg_side];	// save connection we are about to sever
+	const auto child_save = Cursegp->children[newseg_side];	// save connection we are about to sever
 	Cursegp->children[newseg_side] = segment_none;			// sever connection
 	create_group_list(Cursegp, GroupList[ROT_GROUP].segments, NULL);       // create list of segments in group
 	Cursegp->children[newseg_side] = child_save;	// restore severed connection
@@ -1121,7 +1120,7 @@ static int med_save_group( const char *filename, const group::vertex_array_type_
 	group_fileinfo.texture_offset    =   texture_offset;
 	
 	// Write the fileinfo
-	PHYSFSX_fseek(  SaveFile, 0, SEEK_SET );  // Move to TOF
+	PHYSFS_seek(SaveFile, 0);  // Move to TOF
 	PHYSFS_write( SaveFile, &group_fileinfo, sizeof(group_fileinfo), 1);
 
 	//==================== CLOSE THE FILE =============================
@@ -1169,7 +1168,7 @@ static int med_load_group( const char *filename, group::vertex_array_type_t &ver
 
 	// Read in group_top_fileinfo to get size of saved fileinfo.
 
-	if (PHYSFSX_fseek( LoadFile, 0, SEEK_SET ))
+	if (!PHYSFS_seek(LoadFile, 0))
 		Error( "Error seeking to 0 in group.c" );
 
 	if (PHYSFS_read( LoadFile, &group_top_fileinfo, sizeof(group_top_fileinfo),1 )!=1)
@@ -1193,7 +1192,7 @@ static int med_load_group( const char *filename, group::vertex_array_type_t &ver
 
 	// Now, Read in the fileinfo
 
-	if (PHYSFSX_fseek( LoadFile, 0, SEEK_SET ))
+	if (!PHYSFS_seek(LoadFile, 0))
 		Error( "Error seeking to 0b in group.c" );
 
 	if (PHYSFS_read( LoadFile, &group_fileinfo, group_top_fileinfo.fileinfo_sizeof,1 )!=1)
@@ -1207,7 +1206,7 @@ static int med_load_group( const char *filename, group::vertex_array_type_t &ver
 
 	if (group_fileinfo.header_offset > -1 )
 	{
-		if (PHYSFSX_fseek( LoadFile,group_fileinfo.header_offset, SEEK_SET ))
+		if (!PHYSFS_seek(LoadFile, group_fileinfo.header_offset))
 			Error( "Error seeking to header_offset in group.c" );
 
 		if (PHYSFS_read( LoadFile, &group_header, group_fileinfo.header_size,1 )!=1)
@@ -1225,7 +1224,7 @@ static int med_load_group( const char *filename, group::vertex_array_type_t &ver
 
 	if (group_fileinfo.editor_offset > -1 )
 	{
-		if (PHYSFSX_fseek( LoadFile,group_fileinfo.editor_offset, SEEK_SET ))
+		if (!PHYSFS_seek(LoadFile, group_fileinfo.editor_offset))
 			Error( "Error seeking to editor_offset in group.c" );
 
 		if (PHYSFS_read( LoadFile, &group_editor, group_fileinfo.editor_size,1 )!=1)
@@ -1237,7 +1236,7 @@ static int med_load_group( const char *filename, group::vertex_array_type_t &ver
 
 	if ( (group_fileinfo.vertex_offset > -1) && (group_fileinfo.vertex_howmany > 0))
 	{
-		if (PHYSFSX_fseek( LoadFile,group_fileinfo.vertex_offset, SEEK_SET ))
+		if (!PHYSFS_seek(LoadFile, group_fileinfo.vertex_offset))
 			Error( "Error seeking to vertex_offset in group.c" );
 
 		vertex_ids.clear();
@@ -1255,7 +1254,7 @@ static int med_load_group( const char *filename, group::vertex_array_type_t &ver
 
 	if ( (group_fileinfo.segment_offset > -1) && (group_fileinfo.segment_howmany > 0))
 	{
-		if (PHYSFSX_fseek( LoadFile,group_fileinfo.segment_offset, SEEK_SET ))
+		if (!PHYSFS_seek(LoadFile, group_fileinfo.segment_offset))
 			Error( "Error seeking to segment_offset in group.c" );
 
 		segment_ids.clear();
@@ -1312,7 +1311,7 @@ static int med_load_group( const char *filename, group::vertex_array_type_t &ver
 
 	if ( (group_fileinfo.texture_offset > -1) && (group_fileinfo.texture_howmany > 0))
 	{
-		if (PHYSFSX_fseek( LoadFile, group_fileinfo.texture_offset, SEEK_SET ))
+		if (!PHYSFS_seek(LoadFile, group_fileinfo.texture_offset))
 			Error( "Error seeking to texture_offset in gamemine.c" );
 
 		range_for (auto &i, partial_range(old_tmap_list, group_fileinfo.texture_howmany))

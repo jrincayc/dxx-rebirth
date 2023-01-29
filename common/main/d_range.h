@@ -8,6 +8,7 @@
 
 #include <type_traits>
 #include <iterator>
+#include <ranges>
 #include <utility>
 
 /* These could be empty tag types, but defining them from
@@ -81,32 +82,26 @@ struct xrange_check_constant_endpoints<std::integral_constant<Tb, b>, std::integ
 	static_assert((step > 0 ? ((e - b) % step) : ((b - e) % -step)) == 0, "step size will overstep end value");
 };
 
-template <typename step_type>
-static constexpr bool get_xrange_ascending()
-{
-	if constexpr (std::is_same<step_type, xrange_ascending>::value)
-		return true;
-	else if constexpr (std::is_same<step_type, xrange_descending>::value)
-		return false;
-	else
-		return step_type::value > 0;
 }
 
-}
-
-/* For the general case, store a `const`-qualified copy of the value,
+/* For the general case, store a copy of the value,
  * and provide an implicit conversion.
  */
 template <typename T, bool begin>
 class xrange_endpoint
 {
 public:
-	const T value;
-	constexpr xrange_endpoint(T v) :
+	using value_type = T;
+	/* The value is never mutated, but must be mutable to satisfy
+	 * std::ranges::range<xrange<...>>.
+	 */
+	value_type value{};
+	constexpr xrange_endpoint() = default;
+	constexpr xrange_endpoint(value_type v) :
 		value(std::move(v))
 	{
 	}
-	constexpr operator T() const
+	constexpr operator value_type() const
 	{
 		return value;
 	}
@@ -128,16 +123,29 @@ public:
 template <typename index_type, typename step_type>
 class xrange_iterator
 {
-	index_type m_idx;
+	index_type m_idx{};
 public:
 	using difference_type = std::ptrdiff_t;
 	using iterator_category = std::forward_iterator_tag;
 	using value_type = index_type;
 	using pointer = value_type *;
 	using reference = value_type &;
+	constexpr xrange_iterator() = default;	// default constructible required by std::semiregular
 	constexpr xrange_iterator(const index_type i) :
 		m_idx(i)
 	{
+	}
+	/* This is a temporary constructor to facilitate conversion to sentinel
+	 * usage in calling algorithms.
+	 */
+	template <typename end_index_type>
+		constexpr xrange_iterator(xrange_endpoint<end_index_type, false> i) :
+			m_idx(i)
+	{
+	}
+	difference_type operator-(const xrange_iterator &i) const
+	{
+		return m_idx - i.m_idx;
 	}
 	index_type operator*() const
 	{
@@ -153,10 +161,20 @@ public:
 			m_idx += step_type::value;
 		return *this;
 	}
-	constexpr bool operator!=(const xrange_iterator &i) const
+	xrange_iterator operator++(int)
 	{
-		return m_idx != i.m_idx;
+		auto r = *this;
+		++ *this;
+		return r;
 	}
+	[[nodiscard]]
+	constexpr bool operator==(const xrange_iterator &i) const = default;
+	template <typename end_index_type>
+		[[nodiscard]]
+		constexpr bool operator==(const xrange_endpoint<end_index_type, false> &i) const
+		{
+			return m_idx == i.value;
+		}
 };
 
 /* This provides an approximation of the functionality of the Python2
@@ -165,8 +183,8 @@ public:
  */
 template <typename index_type, typename B = index_type, typename E = index_type, typename step_type = xrange_ascending>
 class xrange :
-	public xrange_endpoint<B, true>,
-	public xrange_endpoint<E, false>
+	protected xrange_endpoint<B, true>,
+	protected xrange_endpoint<E, false>
 {
 protected:
 	using begin_type = xrange_endpoint<B, true>;
@@ -183,19 +201,41 @@ protected:
 	{
 		if constexpr (std::is_convertible<E, B>::value)
 		{
-			constexpr bool ascending = detail::get_xrange_ascending<step_type>();
+			if constexpr (std::is_same<step_type, xrange_ascending>::value || (!std::is_same<step_type, xrange_descending>::value && step_type::value > 0))
+			{
 #ifdef DXX_CONSTANT_TRUE
-			(DXX_CONSTANT_TRUE(!(ascending ? b < e : e < b)) && (DXX_ALWAYS_ERROR_FUNCTION(xrange_is_always_empty, "begin never less than end"), 0));
+				(DXX_CONSTANT_TRUE(!(b < e)) && (DXX_ALWAYS_ERROR_FUNCTION("begin never less than end"), 0));
 #endif
-			if (!(ascending ? b < e : e < b))
-				return e;
+				if (!(b < e))
+					return e;
+			}
+			else
+			{
+#ifdef DXX_CONSTANT_TRUE
+				(DXX_CONSTANT_TRUE(!(e < b)) && (DXX_ALWAYS_ERROR_FUNCTION("end never less than begin"), 0));
+#endif
+				if (!(e < b))
+					return e;
+			}
 		}
 		else
 			(void)e;
 		return b;
 	}
 public:
-	using range_owns_iterated_storage = std::false_type;
+	using end_type::value;
+	using end_type::operator typename end_type::value_type;
+	/* If the endpoints are both integral constants, then they will have a
+	 * default constructor that this explicitly defaulted default constructor
+	 * can call.  They will have no non-static data members, so their default
+	 * constructors will produce reasonable values.
+	 *
+	 * Otherwise, the endpoints will not have a default constructor, and this
+	 * default constructor will fail to compile.  That is desirable, since such
+	 * an endpoint would have a non-static data member that would not be
+	 * initialized by a default constructor.
+	 */
+	constexpr xrange() = default;
 	constexpr xrange(B b, E e) :
 		begin_type(init_begin(std::move(b), e)), end_type(std::move(e))
 	{
@@ -219,11 +259,14 @@ public:
 	{
 		return iterator(static_cast<const begin_type &>(*this));
 	}
-	iterator end() const
+	end_type end() const
 	{
-		return iterator(static_cast<const end_type &>(*this));
+		return *this;
 	}
 };
+
+template <typename index_type, typename B, typename E, typename step_type>
+inline constexpr bool std::ranges::enable_borrowed_range<xrange<index_type, B, E, step_type>> = true;
 
 /* Disallow building an `xrange` with a reference to mutable `e` as the
  * end term.  When `e` is mutable, the loop might change `e` during
@@ -231,7 +274,8 @@ public:
  * change `e`, store it in a const qualified variable, which will select
  * the next overload down instead.
  */
-template <typename Tb, typename Te, typename std::enable_if<!std::is_const<Te>::value, int>::type = 0>
+template <typename Tb, typename Te>
+requires(!std::is_const<Te>::value)
 xrange(Tb &&b, Te &e) -> xrange<Tb, Tb, Te &>;	// provokes a static_assert failure in the constructor
 
 template <typename Tb, typename Te>

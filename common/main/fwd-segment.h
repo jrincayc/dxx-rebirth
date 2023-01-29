@@ -20,7 +20,7 @@
 
 namespace dcx {
 constexpr std::integral_constant<std::size_t, 9000> MAX_SEGMENTS{};
-using segnum_t = uint16_t;
+enum segnum_t : uint16_t;
 struct d_level_unique_automap_state;
 }
 #ifdef dsx
@@ -54,9 +54,9 @@ constexpr std::integral_constant<std::size_t, 4 * MAX_SEGMENTS> MAX_SEGMENT_VERT
 #ifdef dsx
 DXX_VALPTRIDX_DEFINE_SUBTYPE_TYPEDEFS(segment, seg);
 
-static constexpr valptridx<segment>::magic_constant<0xfffe> segment_exit{};
-static constexpr valptridx<segment>::magic_constant<0xffff> segment_none{};
-static constexpr valptridx<segment>::magic_constant<0> segment_first{};
+static constexpr valptridx<segment>::magic_constant<segnum_t{0xfffe}> segment_exit{};
+static constexpr valptridx<segment>::magic_constant<segnum_t{0xffff}> segment_none{};
+static constexpr valptridx<segment>::magic_constant<segnum_t{0}> segment_first{};
 #endif
 }
 #ifdef dsx
@@ -70,20 +70,13 @@ namespace dcx {
 enum class materialization_center_number : uint8_t;
 enum class station_number : uint8_t;
 
-enum sidenum_t : uint8_t
-{
-	WLEFT = 0,
-	WTOP = 1,
-	WRIGHT = 2,
-	WBOTTOM = 3,
-	WBACK = 4,
-	WFRONT = 5
-};
+enum class sidenum_t : uint8_t;
+enum class sidemask_t : uint8_t;
 
 [[nodiscard]]
 std::optional<sidenum_t> build_sidenum_from_untrusted(uint8_t untrusted);
 constexpr constant_xrange<sidenum_t, sidenum_t{0}, sidenum_t{6}> MAX_SIDES_PER_SEGMENT{};
-constexpr std::integral_constant<sidenum_t, sidenum_t{MAX_SIDES_PER_SEGMENT.value}> side_none{};
+constexpr std::integral_constant<sidenum_t, MAX_SIDES_PER_SEGMENT.value> side_none{};
 
 using texture_index = uint16_t;
 enum class texture1_value : uint16_t;
@@ -148,8 +141,10 @@ struct d_level_shared_vertex_state;
 struct d_level_shared_segment_state;
 struct d_level_unique_segment_state;
 
-extern const enumerated_array<enumerated_array<segment_relative_vertnum, 4, side_relative_vertnum>, MAX_SIDES_PER_SEGMENT, sidenum_t>  Side_to_verts;    // Side_to_verts[my_side] is list of vertices forming side my_side.
-extern const enumerated_array<sidenum_t, MAX_SIDES_PER_SEGMENT, sidenum_t> Side_opposite;                                // Side_opposite[my_side] returns side opposite cube from my_side.
+template <typename T>
+	using per_side_array = enumerated_array<T, static_cast<std::size_t>(MAX_SIDES_PER_SEGMENT.value), sidenum_t>;
+extern const per_side_array<enumerated_array<segment_relative_vertnum, 4, side_relative_vertnum>>  Side_to_verts; // Side_to_verts[my_side] is list of vertices forming side my_side.
+extern const per_side_array<sidenum_t> Side_opposite; // Side_opposite[my_side] returns side opposite cube from my_side.
 
 void segment_side_wall_tmap_write(PHYSFS_File *fp, const shared_side &sside, const unique_side &uside);
 }
@@ -166,7 +161,8 @@ constexpr std::integral_constant<std::size_t, 32000> MAX_DELTA_LIGHTS{}; // Orig
 
 constexpr std::integral_constant<fix, 2048> DL_SCALE{};    // Divide light to allow 3 bits integer, 5 bits fraction.
 
-using d_delta_light_array = std::array<delta_light, MAX_DELTA_LIGHTS>;
+enum class delta_light_index : uint16_t;
+using d_delta_light_array = enumerated_array<delta_light, MAX_DELTA_LIGHTS, delta_light_index>;
 
 void clear_light_subtracted();
 

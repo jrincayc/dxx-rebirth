@@ -7,6 +7,7 @@
 //#define DEBUG
 
 #include "dxxsconf.h"
+#include <span>
 #include <vector>
 #include <string.h>
 #include <time.h>
@@ -231,15 +232,6 @@ static void do_timer_wait(void)
 
 namespace {
 
-class MVE_audio_deleter
-{
-public:
-	void operator()(int16_t *p) const
-	{
-		MovieMemoryFree(p);
-	}
-};
-
 template <typename T>
 struct MVE_audio_clamp
 {
@@ -256,15 +248,13 @@ struct MVE_audio_clamp
 
 }
 
-static int audiobuf_created = 0;
 static void mve_audio_callback(void *userdata, unsigned char *stream, int len);
-static std::array<std::unique_ptr<short[], MVE_audio_deleter>, TOTAL_AUDIO_BUFFERS> mve_audio_buffers;
+static std::array<std::unique_ptr<int16_t[]>, TOTAL_AUDIO_BUFFERS> mve_audio_buffers;
 static std::array<unsigned, TOTAL_AUDIO_BUFFERS> mve_audio_buflens;
 static int    mve_audio_curbuf_curpos=0;
 static int mve_audio_bufhead=0;
 static int mve_audio_buftail=0;
 static int mve_audio_playing=0;
-static int mve_audio_canplay=0;
 static unsigned mve_audio_flags;
 static int mve_audio_enabled = 1;
 static std::unique_ptr<SDL_AudioSpec> mve_audio_spec;
@@ -340,10 +330,8 @@ static int create_audiobuf_handler(unsigned char, unsigned char minor, const uns
 	if (!mve_audio_enabled)
 		return 1;
 
-	if (audiobuf_created)
+	if (mve_audio_spec)
 		return 1;
-	else
-		audiobuf_created = 1;
 
 	flags = get_ushort(data + 2);
 	sample_rate = get_ushort(data + 4);
@@ -380,11 +368,10 @@ static int create_audiobuf_handler(unsigned char, unsigned char minor, const uns
 	{
 		if (SDL_OpenAudio(mve_audio_spec.get(), NULL) >= 0) {
 			con_puts(CON_CRITICAL, "   success");
-			mve_audio_canplay = 1;
 		}
 		else {
 			con_printf(CON_CRITICAL, "   failure : %s", SDL_GetError());
-			mve_audio_canplay = 0;
+			mve_audio_spec = {};
 		}
 	}
 
@@ -392,7 +379,6 @@ static int create_audiobuf_handler(unsigned char, unsigned char minor, const uns
 	else {
 		// MD2211: using the same old SDL audio callback as a postmixer in SDL_mixer
 		Mix_SetPostMix(mve_audio_spec->callback, mve_audio_spec->userdata);
-		mve_audio_canplay = 1;
 	}
 #endif
 
@@ -403,7 +389,7 @@ static int create_audiobuf_handler(unsigned char, unsigned char minor, const uns
 
 static int play_audio_handler(unsigned char, unsigned char, const unsigned char *, int, void *)
 {
-	if (mve_audio_canplay  &&  !mve_audio_playing  &&  mve_audio_bufhead != mve_audio_buftail)
+	if (mve_audio_spec && !mve_audio_playing && mve_audio_bufhead != mve_audio_buftail)
 	{
 		if (CGameArg.SndDisableSdlMixer)
 			SDL_PauseAudio(0);
@@ -416,36 +402,52 @@ static int play_audio_handler(unsigned char, unsigned char, const unsigned char 
 	return 1;
 }
 
+/* Caution: the data length argument is unnamed here because it is sometimes
+ * wrong.  The first movie segment of the opening video of the game is
+ * ill-formed:
+ * - Its segment size according to mvelib is 2932.
+ * - It has a 10 byte header:
+ *   - 2 bytes skipped
+ *   - 2 bytes of `chan`
+ *   - 2 bytes of `nsamp`
+ *   - 2 bytes of "current offset 0"
+ *   - 2 bytes of "current offset 1"
+ * - It has an internal size of 2924, which is 2 bytes too long.
+ *
+ * If `std::span` is used to describe this segment, then the historically used
+ * audio processing will read past the end of the `std::span`, which is
+ * undefined and may trigger an assertion failure.  Therefore, do not use
+ * std::span to describe this block of memory.
+ */
 static int audio_data_handler(unsigned char major, unsigned char, const unsigned char *data, int, void *)
 {
 	static const int selected_chan=1;
-	int chan;
-	int nsamp;
-	if (mve_audio_canplay)
+	if (mve_audio_spec)
 	{
 		if (mve_audio_playing)
 			SDL_LockAudio();
 
-		chan = get_ushort(data + 2);
-		nsamp = get_ushort(data + 4);
+		const auto chan = get_ushort(data + 2);
+		unsigned nsamp = get_ushort(data + 4);
 		if (chan & selected_chan)
 		{
-			std::unique_ptr<int16_t[], MVE_audio_deleter> p;
+			decltype(mve_audio_buffers)::value_type p;
 			const auto DigiVolume = GameCfg.DigiVolume;
-			/* HACK: +4 mveaudio_uncompress adds 4 more bytes */
 			/* At volume 0 (minimum), no sound is wanted. */
 			if (DigiVolume && major == MVE_OPCODE_AUDIOFRAMEDATA) {
 				const auto flags = mve_audio_flags;
 				if (flags & MVE_AUDIO_FLAGS_COMPRESSED) {
+					/* HACK: +4 mveaudio_uncompress adds 4 more bytes */
 					nsamp += 4;
 
-					p.reset(reinterpret_cast<int16_t *>(MovieMemoryAllocate(nsamp)));
-					mveaudio_uncompress(p.get(), data); /* XXX */
+					const auto n2 = nsamp / 2;
+					p = std::make_unique<int16_t[]>(n2);
+					mveaudio_uncompress({p.get(), n2}, data);
 				} else {
 					nsamp -= 8;
 					data += 8;
 
-					p.reset(reinterpret_cast<int16_t *>(MovieMemoryAllocate(nsamp)));
+					p = std::make_unique<int16_t[]>(nsamp / 2);
 					memcpy(p.get(), data, nsamp);
 				}
 				if (DigiVolume < 8)
@@ -463,8 +465,10 @@ static int audio_data_handler(unsigned char major, unsigned char, const unsigned
 					}
 				}
 			} else {
-				p.reset(reinterpret_cast<int16_t *>(MovieMemoryAllocate(nsamp)));
-				memset(p.get(), 0, nsamp); /* XXX */
+				/* make_unique will value-initialize the buffer, so no explicit
+				 * initialization is necessary
+				 */
+				p = std::make_unique<int16_t[]>(nsamp / 2);
 			}
 			unsigned buflen = nsamp;
 
@@ -495,7 +499,8 @@ static int audio_data_handler(unsigned char major, unsigned char, const unsigned
 				{
 				// copy back to the audio buffer
 					const std::size_t converted_buffer_size = cvt.len_cvt;
-					p.reset(reinterpret_cast<int16_t *>(MovieMemoryAllocate(converted_buffer_size))); // free the old audio buffer
+					p.reset(); // free the old audio buffer
+					p = std::make_unique<int16_t[]>(converted_buffer_size / 2);
 					buflen = converted_buffer_size;
 					memcpy(p.get(), cvt.buf, converted_buffer_size);
 				}
@@ -530,8 +535,7 @@ unsigned char *g_vBackBuf1, *g_vBackBuf2;
 
 static int g_destX, g_destY;
 static int g_screenWidth, g_screenHeight;
-static const unsigned char *g_pCurMap;
-static int g_nMapLength=0;
+static std::span<const uint8_t> g_pCurMap;
 static int g_truecolor;
 
 static int create_videobuf_handler(unsigned char, unsigned char minor, const unsigned char *data, int, void *)
@@ -624,8 +628,7 @@ static int video_palette_handler(unsigned char, unsigned char, const unsigned ch
 
 static int video_codemap_handler(unsigned char, unsigned char, const unsigned char *data, int len, void *)
 {
-	g_pCurMap = data;
-	g_nMapLength = len;
+	g_pCurMap = std::span<const uint8_t>(data, len);
 	return 1;
 }
 
@@ -649,9 +652,9 @@ static int video_data_handler(unsigned char, unsigned char, const unsigned char 
 
 	/* convert the frame */
 	if (g_truecolor) {
-		decodeFrame16(g_vBackBuf1, g_pCurMap, g_nMapLength, data+14, len-14);
+		decodeFrame16(g_vBackBuf1, g_pCurMap, data+14, len-14);
 	} else {
-		decodeFrame8(g_vBackBuf1, g_pCurMap, g_nMapLength, data+14, len-14);
+		decodeFrame8(g_vBackBuf1, g_pCurMap, data+14, len-14);
 	}
 
 	return 1;
@@ -659,11 +662,11 @@ static int video_data_handler(unsigned char, unsigned char, const unsigned char 
 
 static int end_chunk_handler(unsigned char, unsigned char, const unsigned char *, int, void *)
 {
-	g_pCurMap=NULL;
+	g_pCurMap = {};
 	return 1;
 }
 
-int MVE_rmPrepMovie(MVESTREAM_ptr_t &pMovie, void *src, int x, int y, int)
+int MVE_rmPrepMovie(MVESTREAM_ptr_t &pMovie, MVEFILE::stream_type *const src, int x, int y, int)
 {
 	if (pMovie) {
 		mve_reset(pMovie.get());
@@ -743,13 +746,17 @@ void MVE_rmEndMovie(std::unique_ptr<MVESTREAM>)
 	timer_stop();
 	timer_created = 0;
 
-	if (mve_audio_canplay) {
+	if (mve_audio_spec) {
 		// MD2211: if using SDL_Mixer, we never reinit sound, hence never close it
 		if (CGameArg.SndDisableSdlMixer)
 		{
 			SDL_CloseAudio();
 		}
-		mve_audio_canplay = 0;
+#if DXX_USE_SDLMIXER
+		else
+			Mix_SetPostMix(nullptr, nullptr);
+#endif
+		mve_audio_spec = {};
 	}
 	mve_audio_buffers = {};
 	mve_audio_buflens = {};
@@ -758,14 +765,10 @@ void MVE_rmEndMovie(std::unique_ptr<MVESTREAM>)
 	mve_audio_bufhead=0;
 	mve_audio_buftail=0;
 	mve_audio_playing=0;
-	mve_audio_canplay=0;
 	mve_audio_flags = 0;
 
-	mve_audio_spec.reset();
-	audiobuf_created = 0;
 	g_vBuffers.clear();
-	g_pCurMap=NULL;
-	g_nMapLength=0;
+	g_pCurMap = {};
 	videobuf_created = 0;
 	video_initialized = 0;
 }

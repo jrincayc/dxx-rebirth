@@ -33,13 +33,14 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include "d_levelstate.h"
 #include "d_range.h"
 #include "compiler-range_for.h"
+#include "partial_range.h"
 #include "segiter.h"
 #include "d_zip.h"
 
 //	Special door on boss level which is locked if not in multiplayer...sorry for this awful solution --MK.
 #define	BOSS_LOCKED_DOOR_LEVEL	7
 #define	BOSS_LOCKED_DOOR_SEG		595
-#define	BOSS_LOCKED_DOOR_SIDE	5
+#define	BOSS_LOCKED_DOOR_SIDE	sidenum_t::WFRONT
 
 namespace dcx {
 unsigned Num_wall_anims;
@@ -153,7 +154,7 @@ static std::pair<uint_fast32_t, uint_fast32_t> get_transparency_check_values(con
 static uint_fast32_t check_transparency(const GameBitmaps_array &GameBitmaps, const Textures_array &Textures, const unique_side &side)
 {
 	const auto &&v = get_transparency_check_values(side);
-	return GameBitmaps[Textures[v.first].index].get_flag_mask(v.second);
+	return GameBitmaps[Textures[v.first]].get_flag_mask(v.second);
 }
 
 }
@@ -236,7 +237,7 @@ WALL_IS_DOORWAY_result_t WALL_IS_DOORWAY(const GameBitmaps_array &GameBitmaps, c
 #if DXX_USE_EDITOR
 //-----------------------------------------------------------------
 // Initializes all the walls (in other words, no special walls)
-void wall_init()
+void wall_init(d_level_unique_wall_subsystem_state &LevelUniqueWallSubsystemState)
 {
 	init_exploding_walls();
 	auto &Walls = LevelUniqueWallSubsystemState.Walls;
@@ -435,9 +436,10 @@ void wall_open_door(const vmsegptridx_t seg, const sidenum_t side)
 	auto &ActiveDoors = LevelUniqueWallSubsystemState.ActiveDoors;
 	auto &vmactdoorptr = ActiveDoors.vmptr;
 	if (w->state == wall_state::closing) {		//closing, so reuse door
-		const auto &&r = make_range(vmactdoorptr);
-		const auto &&i = std::find_if(r.begin(), r.end(), find_active_door_predicate(wall_num));
-		if (i == r.end())	// likely in demo playback or multiplayer
+		const auto &&r = ranges::subrange(vmactdoorptr);
+		const auto &&re = r.end();
+		const auto &&i = ranges::find_if(r.begin(), re, find_active_door_predicate(wall_num));
+		if (i == re)	// likely in demo playback or multiplayer
 		{
 			const auto c = ActiveDoors.get_count();
 			ActiveDoors.set_count(c + 1);
@@ -478,7 +480,7 @@ void wall_open_door(const vmsegptridx_t seg, const sidenum_t side)
 		d->front_wallnum[0] = seg->shared_segment::sides[side].wall_num;
 	}
 	else
-		con_printf(CON_URGENT, "Illegal Connectside %i in wall_open_door. Trying to hop over. Please check your level!", side);
+		con_printf(CON_URGENT, "Illegal Connectside %i in wall_open_door on segment %hu. Trying to hop over. Please check your level!", underlying_value(side), seg.get_unchecked_index());
 
 	if (Newdemo_state == ND_STATE_RECORDING) {
 		newdemo_record_door_opening(seg, side);
@@ -547,9 +549,10 @@ void start_wall_cloak(const vmsegptridx_t seg, const sidenum_t side)
 	auto &CloakingWalls = LevelUniqueWallSubsystemState.CloakingWalls;
 	if (w->state == wall_state::decloaking)
 	{	//decloaking, so reuse door
-		const auto &&r = make_range(CloakingWalls.vmptr);
-		const auto i = std::find_if(r.begin(), r.end(), find_cloaked_wall_predicate(w));
-		if (i == r.end())
+		const auto &&r = ranges::subrange(CloakingWalls.vmptr);
+		const auto &&re = r.end();
+		const auto &&i = ranges::find_if(r.begin(), re, find_cloaked_wall_predicate(w));
+		if (i == re)
 		{
 			d_debugbreak();
 			return;
@@ -623,9 +626,10 @@ void start_wall_decloak(const vmsegptridx_t seg, const sidenum_t side)
 
 	auto &CloakingWalls = LevelUniqueWallSubsystemState.CloakingWalls;
 	if (w->state == wall_state::cloaking) {	//cloaking, so reuse door
-		const auto &&r = make_range(CloakingWalls.vmptr);
-		const auto i = std::find_if(r.begin(), r.end(), find_cloaked_wall_predicate(w));
-		if (i == r.end())
+		const auto &&r = ranges::subrange(CloakingWalls.vmptr);
+		const auto &&re = r.end();
+		const auto &&i = ranges::find_if(r.begin(), re, find_cloaked_wall_predicate(w));
+		if (i == re)
 		{
 			d_debugbreak();
 			return;
@@ -719,12 +723,12 @@ namespace dcx {
 
 namespace {
 
-static unsigned check_poke(fvcvertptr &vcvertptr, const object_base &obj, const shared_segment &seg, const unsigned side)
+static unsigned check_poke(fvcvertptr &vcvertptr, const object_base &obj, const shared_segment &seg, const sidenum_t side)
 {
 	//note: don't let objects with zero size block door
 	if (!obj.size)
 		return 0;
-	return get_seg_masks(vcvertptr, obj.pos, seg, obj.size).sidemask & (1 << side);		//pokes through side!
+	return get_seg_masks(vcvertptr, obj.pos, seg, obj.size).sidemask & build_sidemask(side);		//pokes through side!
 }
 
 }
@@ -735,7 +739,7 @@ namespace dsx {
 
 namespace {
 
-static unsigned is_door_side_obstructed(fvcobjptridx &vcobjptridx, fvcsegptr &vcsegptr, const cscusegment seg, const unsigned side)
+static unsigned is_door_side_obstructed(fvcobjptridx &vcobjptridx, fvcsegptr &vcsegptr, const cscusegment seg, const sidenum_t side)
 {
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
 	auto &Vertices = LevelSharedVertexState.get_vertices();
@@ -795,9 +799,10 @@ void wall_close_door(wall_array &Walls, const vmsegptridx_t seg, const sidenum_t
 	auto &vmactdoorptr = ActiveDoors.vmptr;
 	if (w->state == wall_state::opening)
 	{	//reuse door
-		const auto &&r = make_range(vmactdoorptr);
-		const auto &&i = std::find_if(r.begin(), r.end(), find_active_door_predicate(wall_num));
-		if (i == r.end())
+		const auto &&r = ranges::subrange(vmactdoorptr);
+		const auto &&re = r.end();
+		const auto &&i = ranges::find_if(r.begin(), re, find_active_door_predicate(wall_num));
+		if (i == re)
 		{
 			d_debugbreak();
 			return;
@@ -881,7 +886,7 @@ static bool do_door_open(active_door &d)
 
 		if (seg->shared_segment::sides[side].wall_num == wall_none)
 		{
-			con_printf(CON_URGENT, "Trying to do_door_open on illegal wall %i. Please check your level!",side);
+			con_printf(CON_URGENT, "Trying to do_door_open on illegal wall %i. Please check your level!", underlying_value(side));
 			continue;
 		}
 
@@ -1097,7 +1102,7 @@ namespace {
 
 //	-----------------------------------------------------------------------------
 //	Allowed to open the normally locked special boss door if in multiplayer mode.
-static int special_boss_opening_allowed(segnum_t segnum, int sidenum)
+static int special_boss_opening_allowed(const segnum_t segnum, const sidenum_t sidenum)
 {
 	if (Game_mode & GM_MULTI)
 		return (Current_level_num == BOSS_LOCKED_DOOR_LEVEL) && (segnum == BOSS_LOCKED_DOOR_SEG) && (sidenum == BOSS_LOCKED_DOOR_SIDE);
@@ -1213,14 +1218,14 @@ void wall_toggle(fvmwallptr &vmwallptr, const vmsegptridx_t segp, const sidenum_
 	if (side >= MAX_SIDES_PER_SEGMENT)
 	{
 #ifndef NDEBUG
-		Warning("Can't toggle side %u of segment %d (%u)!\n", side, static_cast<segnum_t>(segp), Highest_segment_index);
+		Warning("Can't toggle side %u of segment %d (%u)!\n", underlying_value(side), segp.get_unchecked_index(), Highest_segment_index);
 #endif
 		return;
 	}
 	const auto wall_num = segp->shared_segment::sides[side].wall_num;
 	if (wall_num == wall_none)
 	{
-		LevelError("Ignoring attempt to toggle wall in segment %hu, side %u: no wall exists there.", segp.get_unchecked_index(), side);
+		LevelError("Ignoring attempt to toggle wall in segment %hu, side %u: no wall exists there.", segp.get_unchecked_index(), underlying_value(side));
 		return;
 	}
 
@@ -1381,7 +1386,7 @@ bool cw_removal_predicate::operator()(cloaking_wall &d)
 
 namespace {
 
-static void process_exploding_walls()
+static void process_exploding_walls(const d_robot_info_array &Robot_info)
 {
 	if (Newdemo_state == ND_STATE_PLAYBACK)
 		return;
@@ -1394,7 +1399,7 @@ static void process_exploding_walls()
 			if (w1.flags & wall_flag::exploding)
 			{
 				assert(num_exploding_walls);
-				const auto n = do_exploding_wall_frame(w1);
+				const auto n = do_exploding_wall_frame(Robot_info, w1);
 				num_exploding_walls -= n;
 				if (!num_exploding_walls)
 					break;
@@ -1405,9 +1410,9 @@ static void process_exploding_walls()
 
 }
 
-void wall_frame_process()
+void wall_frame_process(const d_robot_info_array &Robot_info)
 {
-	process_exploding_walls();
+	process_exploding_walls(Robot_info);
 	{
 		auto &ActiveDoors = LevelUniqueWallSubsystemState.ActiveDoors;
 		const auto &&r = partial_range(ActiveDoors, ActiveDoors.get_count());
@@ -1457,9 +1462,10 @@ void d_level_unique_stuck_object_state::add_stuck_object(fvcwallptr &vcwallptr, 
 void d_level_unique_stuck_object_state::remove_stuck_object(const vcobjidx_t obj)
 {
 	auto &&pr = partial_range(Stuck_objects, Num_stuck_objects);
+	auto &&pre = pr.end();
 	const auto predicate = [obj](const stuckobj &so) { return so.objnum == obj; };
-	const auto i = std::find_if(pr.begin(), pr.end(), predicate);
-	if (i == pr.end())
+	const auto &&i = ranges::find_if(pr.begin(), pre, predicate);
+	if (i == pre)
 		/* Objects enter this function if they are able to become stuck,
 		 * without regard to whether they actually are stuck.  If the
 		 * object terminated without being stuck in a wall, then it will

@@ -78,6 +78,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include "compiler-range_for.h"
 #include "d_range.h"
 #include "d_levelstate.h"
+#include "d_underlying_value.h"
 #include "partial_range.h"
 #include <utility>
 
@@ -85,8 +86,11 @@ using std::min;
 using std::max;
 
 namespace dsx {
+
+namespace {
+
 static void obj_detach_all(object_array &Objects, object_base &parent);
-static void obj_detach_one(object_array &Objects, object &sub);
+static objnum_t obj_detach_one(object_array &Objects, object &sub);
 
 static int is_proximity_bomb_or_any_smart_mine(const weapon_id_type id)
 {
@@ -101,50 +105,47 @@ static int is_proximity_bomb_or_any_smart_mine(const weapon_id_type id)
 	return r;
 }
 
+}
+
 /*
  *  Global variables
  */
 
 object *ConsoleObject;					//the object that is the player
-}
 
-namespace dcx {
-
-//Data for objects
-
-// -- Object stuff
-
-//info on the various types of objects
-}
-
-namespace dsx {
 #ifndef RELEASE
 //set viewer object to next object in array
-void object_goto_next_viewer()
+void object_goto_next_viewer(const object_array &Objects, const object *&viewer)
 {
-	auto &Objects = LevelUniqueObjectState.Objects;
-	auto &vcobjptr = Objects.vcptr;
-	auto &vcobjptridx = Objects.vcptridx;
-	auto &vmobjptr = Objects.vmptr;
-	objnum_t start_obj;
-	start_obj = vcobjptridx(Viewer);		//get viewer object number
-	
-	range_for (const auto &&i, vcobjptr)
+	const auto initial_viewer = viewer;
+	const object *const oe = *Objects.vcptr.end();
+	/* Preconditions:
+	 * - There exists an integer `i` such that `i < MAX_OBJECTS` and
+	 *   `&Objects[i] == initial_viewer`.
+	 * - There exists at least one object not of type `OBJ_NONE`.
+	 * If the first precondition holds, then:
+	 * - The test for `candidate_object != initial_viewer` will always terminate the
+	 *   loop, even if there are no other objects of type other than
+	 *   `OBJ_NONE`.
+	 * If both preconditions hold, then:
+	 * - The loop will always find and return a value.
+	 */
+	unsigned limit = 0;
+	for (auto candidate_object = initial_viewer; ++candidate_object != initial_viewer && limit < MAX_OBJECTS; ++limit)
 	{
-		(void)i;
-		start_obj++;
-		if (start_obj > Highest_object_index ) start_obj = 0;
-
-		auto &objp = *vmobjptr(start_obj);
+		if (unlikely(candidate_object == oe))
+			/* Wrap around to the beginning.  This is only computed if
+			 * necessary, so if an object can be found without wrapping, then
+			 * `begin()` never needs to be called.
+			 */
+			candidate_object = *Objects.vcptr.begin();
+		auto &objp = *candidate_object;
 		if (objp.type != OBJ_NONE)
 		{
-			Viewer = &objp;
+			viewer = &objp;
 			return;
 		}
 	}
-
-	Error( "Could not find a viewer object!" );
-
 }
 #endif
 
@@ -178,10 +179,14 @@ icobjidx_t laser_info::get_last_hitobj() const
 	return hitobj_values[hitobj_pos - 1];
 }
 
+}
+
+namespace dsx {
+
 //draw an object that has one bitmap & doesn't rotate
-void draw_object_blob(grs_canvas &canvas, const object_base &obj, const bitmap_index bmi)
+void draw_object_blob(GameBitmaps_array &GameBitmaps, const object_base &Viewer, grs_canvas &canvas, const object_base &obj, const bitmap_index bmi)
 {
-	auto &bm = GameBitmaps[bmi.index];
+	auto &bm = GameBitmaps[bmi];
 	PIGGY_PAGE_IN( bmi );
 
 	const auto osize = obj.size;
@@ -190,7 +195,7 @@ void draw_object_blob(grs_canvas &canvas, const object_base &obj, const bitmap_i
 	if (obj.type == OBJ_FIREBALL && get_fireball_id(obj) == VCLIP_VOLATILE_WALL_HIT)
 	{
 		vms_vector offs_vec;
-		vm_vec_normalized_dir_quick(offs_vec, Viewer->pos, pos);
+		vm_vec_normalized_dir_quick(offs_vec, Viewer.pos, pos);
 		vm_vec_scale_add2(pos,offs_vec,F1_0);
 	}
 
@@ -203,17 +208,13 @@ void draw_object_blob(grs_canvas &canvas, const object_base &obj, const bitmap_i
 	g3_draw_bitmap(canvas, pos, p.first, p.second, bm);
 }
 
-}
-
-namespace dsx {
-
 //draw an object that is a texture-mapped rod
 void draw_object_tmap_rod(grs_canvas &canvas, const d_level_unique_light_state *const LevelUniqueLightState, const vcobjptridx_t obj, const bitmap_index bitmapi)
 {
 	g3s_lrgb light;
 	PIGGY_PAGE_IN(bitmapi);
 
-	auto &bitmap = GameBitmaps[bitmapi.index];
+	auto &bitmap = GameBitmaps[bitmapi];
 
 	const auto delta = vm_vec_copy_scale(obj->orient.uvec,obj->size);
 
@@ -245,6 +246,8 @@ void draw_object_tmap_rod(grs_canvas &canvas, const d_level_unique_light_state *
 
 #define	CLOAK_FADEIN_DURATION_ROBOT	F1_0
 #define	CLOAK_FADEOUT_DURATION_ROBOT	F1_0
+
+namespace {
 
 //do special cloaked render
 static void draw_cloaked_object(grs_canvas &canvas, const object_base &obj, const g3s_lrgb light, glow_values_t glow, const fix64 cloak_start_time, const fix total_cloaked_time, const fix Cloak_fadein_duration, const fix Cloak_fadeout_duration)
@@ -324,6 +327,7 @@ static void draw_cloaked_object(grs_canvas &canvas, const object_base &obj, cons
 		}
 	}
 
+	auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
 	if (fading) {
 		g3s_lrgb new_light;
 
@@ -331,7 +335,7 @@ static void draw_cloaked_object(grs_canvas &canvas, const object_base &obj, cons
 		new_light.g = fixmul(light.g,light_scale);
 		new_light.b = fixmul(light.b,light_scale);
 		glow[0] = fixmul(glow[0],light_scale);
-		draw_polygon_model(canvas, obj.pos,
+		draw_polygon_model(Polygon_models, canvas, obj.pos,
 				   obj.orient,
 				   obj.rtype.pobj_info.anim_angles,
 				   obj.rtype.pobj_info.model_num, obj.rtype.pobj_info.subobj_flags,
@@ -342,7 +346,7 @@ static void draw_cloaked_object(grs_canvas &canvas, const object_base &obj, cons
 	else {
 		gr_settransblend(canvas, static_cast<gr_fade_level>(cloak_value), gr_blend::normal);
 		g3_set_special_render(draw_tmap_flat);		//use special flat drawer
-		draw_polygon_model(canvas, obj.pos,
+		draw_polygon_model(Polygon_models, canvas, obj.pos,
 				   obj.orient,
 				   obj.rtype.pobj_info.anim_angles,
 				   obj.rtype.pobj_info.model_num, obj.rtype.pobj_info.subobj_flags,
@@ -427,12 +431,13 @@ static void draw_polygon_object(grs_canvas &canvas, const d_level_unique_light_s
 	}
 #endif
 
+	auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
 	if (obj->rtype.pobj_info.tmap_override != -1) {
 		std::array<bitmap_index, 12> bm_ptrs;
 
 		//fill whole array, in case simple model needs more
 		bm_ptrs.fill(Textures[obj->rtype.pobj_info.tmap_override]);
-		draw_polygon_model(canvas, obj->pos,
+		draw_polygon_model(Polygon_models, canvas, obj->pos,
 				   obj->orient,
 				   obj->rtype.pobj_info.anim_angles,
 				   obj->rtype.pobj_info.model_num,
@@ -477,14 +482,14 @@ static void draw_polygon_object(grs_canvas &canvas, const d_level_unique_light_s
 			}
 #endif
 
-			const auto is_weapon_with_inner_model = (obj->type == OBJ_WEAPON && Weapon_info[get_weapon_id(obj)].model_num_inner > -1);
+			const auto is_weapon_with_inner_model = (obj->type == OBJ_WEAPON && Weapon_info[get_weapon_id(obj)].model_num_inner != polygon_model_index::None);
 			bool draw_simple_model;
 			if (is_weapon_with_inner_model)
 			{
 				gr_settransblend(canvas, GR_FADE_OFF, gr_blend::additive_a);
 				draw_simple_model = static_cast<fix>(vm_vec_dist_quick(Viewer->pos, obj->pos)) < Simple_model_threshhold_scale * F1_0*2;
 				if (draw_simple_model)
-					draw_polygon_model(canvas, obj->pos,
+					draw_polygon_model(Polygon_models, canvas, obj->pos,
 							   obj->orient,
 							   obj->rtype.pobj_info.anim_angles,
 							   Weapon_info[get_weapon_id(obj)].model_num_inner,
@@ -494,7 +499,7 @@ static void draw_polygon_object(grs_canvas &canvas, const d_level_unique_light_s
 							   alt_textures);
 			}
 			
-			draw_polygon_model(canvas, obj->pos,
+			draw_polygon_model(Polygon_models, canvas, obj->pos,
 					   obj->orient,
 					   obj->rtype.pobj_info.anim_angles,obj->rtype.pobj_info.model_num,
 					   obj->rtype.pobj_info.subobj_flags,
@@ -507,7 +512,7 @@ static void draw_polygon_object(grs_canvas &canvas, const d_level_unique_light_s
 #if !DXX_USE_OGL // in software rendering must draw inner model last
 				gr_settransblend(canvas, GR_FADE_OFF, gr_blend::additive_a);
 				if (draw_simple_model)
-					draw_polygon_model(canvas, obj->pos,
+					draw_polygon_model(Polygon_models, canvas, obj->pos,
 							   obj->orient,
 							   obj->rtype.pobj_info.anim_angles,
 							   Weapon_info[obj->id].model_num_inner,
@@ -522,6 +527,8 @@ static void draw_polygon_object(grs_canvas &canvas, const d_level_unique_light_s
 		}
 		draw_cloaked_object(canvas, obj, light, engine_glow_value, cloak_duration.first, cloak_duration.second, cloak_fade.first, cloak_fade.second);
 	}
+}
+
 }
 
 }
@@ -584,6 +591,8 @@ static void draw_polygon_object(grs_canvas &canvas, const d_level_unique_light_s
 namespace dcx {
 objnum_t	Player_fired_laser_this_frame=object_none;
 
+namespace {
+
 static bool predicate_debris(const object_base &o)
 {
 	return o.type == OBJ_DEBRIS;
@@ -601,9 +610,11 @@ static bool predicate_nonflare_weapon(const object_base &o)
 
 }
 
-
+}
 
 namespace dsx {
+
+namespace {
 
 static bool predicate_fireball(const object &o)
 {
@@ -619,7 +630,7 @@ static void set_robot_location_info(object &objp)
 	auto &vcobjptr = Objects.vcptr;
 	if (Player_fired_laser_this_frame != object_none) {
 		const auto &&temp = g3_rotate_point(objp.pos);
-		if (temp.p3_codes & CC_BEHIND)		//robot behind the screen
+		if ((temp.p3_codes & clipping_code::behind) != clipping_code::None)		//robot behind the screen
 			return;
 
 		//the code below to check for object near the center of the screen
@@ -630,6 +641,9 @@ static void set_robot_location_info(object &objp)
 			objp.ctype.ai_info.danger_laser_signature = vcobjptr(Player_fired_laser_this_frame)->signature;
 		}
 	}
+}
+
+static const object *Viewer_save;
 }
 
 //	------------------------------------------------------------------------------------------------------------------
@@ -654,7 +668,7 @@ void create_small_fireball_on_object(const vmobjptridx_t objp, fix size_scale, i
 
 	const auto &&segnum = find_point_seg(LevelSharedSegmentState, LevelUniqueSegmentState, pos, Segments.vmptridx(objp->segnum));
 	if (segnum != segment_none) {
-		auto expl_obj = object_create_explosion(segnum, pos, size, VCLIP_SMALL_EXPLOSION);
+		const auto &&expl_obj = object_create_explosion_without_damage(Vclip, segnum, pos, size, VCLIP_SMALL_EXPLOSION);
 		if (!expl_obj)
 			return;
 		obj_attach(Objects, objp, expl_obj);
@@ -829,49 +843,49 @@ void render_object(grs_canvas &canvas, const d_level_unique_light_state &LevelUn
 #endif
 }
 
-void reset_player_object()
+void reset_player_object(object_base &ConsoleObject)
 {
 	//Init physics
 
-	vm_vec_zero(ConsoleObject->mtype.phys_info.velocity);
-	vm_vec_zero(ConsoleObject->mtype.phys_info.thrust);
-	vm_vec_zero(ConsoleObject->mtype.phys_info.rotvel);
-	vm_vec_zero(ConsoleObject->mtype.phys_info.rotthrust);
-	ConsoleObject->mtype.phys_info.turnroll = 0;
-	ConsoleObject->mtype.phys_info.mass = Player_ship->mass;
-	ConsoleObject->mtype.phys_info.drag = Player_ship->drag;
-	ConsoleObject->mtype.phys_info.flags = PF_TURNROLL | PF_LEVELLING | PF_WIGGLE | PF_USES_THRUST;
+	vm_vec_zero(ConsoleObject.mtype.phys_info.velocity);
+	vm_vec_zero(ConsoleObject.mtype.phys_info.thrust);
+	vm_vec_zero(ConsoleObject.mtype.phys_info.rotvel);
+	vm_vec_zero(ConsoleObject.mtype.phys_info.rotthrust);
+	ConsoleObject.mtype.phys_info.turnroll = 0;
+	ConsoleObject.mtype.phys_info.mass = Player_ship->mass;
+	ConsoleObject.mtype.phys_info.drag = Player_ship->drag;
+	ConsoleObject.mtype.phys_info.flags =
+#ifndef DXX_FEATURE_DISABLE_SHIP_WIGGLE
+		PF_WIGGLE |
+#endif
+		PF_TURNROLL | PF_LEVELLING | PF_USES_THRUST;
 
 	//Init render info
 
-	ConsoleObject->render_type = RT_POLYOBJ;
-	ConsoleObject->rtype.pobj_info.model_num = Player_ship->model_num;		//what model is this?
-	ConsoleObject->rtype.pobj_info.subobj_flags = 0;		//zero the flags
-	ConsoleObject->rtype.pobj_info.tmap_override = -1;		//no tmap override!
-	ConsoleObject->rtype.pobj_info.anim_angles = {};
+	ConsoleObject.render_type = RT_POLYOBJ;
+	ConsoleObject.rtype.pobj_info.model_num = Player_ship->model_num;		//what model is this?
+	ConsoleObject.rtype.pobj_info.subobj_flags = 0;		//zero the flags
+	ConsoleObject.rtype.pobj_info.tmap_override = -1;		//no tmap override!
+	ConsoleObject.rtype.pobj_info.anim_angles = {};
 
 	// Clear misc
 
-	ConsoleObject->flags = 0;
+	ConsoleObject.flags = 0;
 }
 
-
 //make object0 the player, setting all relevant fields
-void init_player_object()
+void init_player_object(const d_level_shared_polygon_model_state &LevelSharedPolygonModelState, object_base &console)
 {
-	auto &Objects = LevelUniqueObjectState.Objects;
-	auto &vmobjptr = Objects.vmptr;
-	const auto &&console = vmobjptr(ConsoleObject);
-	console->type = OBJ_PLAYER;
+	console.type = OBJ_PLAYER;
 	set_player_id(console, 0);					//no sub-types for player
-	console->signature = object_signature_t{0};
+	console.signature = object_signature_t{0};
 	auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
-	console->size = Polygon_models[Player_ship->model_num].rad;
-	console->control_source = object::control_type::slew;			//default is player slewing
-	console->movement_source = object::movement_type::physics;		//change this sometime
-	console->lifeleft = IMMORTAL_TIME;
-	console->attached_obj = object_none;
-	reset_player_object();
+	console.size = Polygon_models[Player_ship->model_num].rad;
+	console.control_source = object::control_type::slew;			//default is player slewing
+	console.movement_source = object::movement_type::physics;		//change this sometime
+	console.lifeleft = IMMORTAL_TIME;
+	console.attached_obj = object_none;
+	reset_player_object(console);
 }
 
 //sets up the free list & init player & whatever else
@@ -892,7 +906,7 @@ void init_objects()
 
 	Viewer = ConsoleObject = &Objects.front();
 
-	init_player_object();
+	init_player_object(LevelSharedPolygonModelState, *ConsoleObject);
 	obj_link_unchecked(Objects.vmptr, Objects.vmptridx(ConsoleObject), Segments.vmptridx(segment_first));	//put in the world in segment 0
 	LevelUniqueObjectState.num_objects = 1;						//just the player
 	Objects.set_count(1);
@@ -919,6 +933,8 @@ void special_reset_objects(d_level_unique_object_state &LevelUniqueObjectState)
 	LevelUniqueObjectState.num_objects = num_objects;
 }
 
+namespace {
+
 //link the object into the list for its segment
 void obj_link(fvmobjptr &vmobjptr, const vmobjptridx_t obj, const vmsegptridx_t segnum)
 {
@@ -926,6 +942,8 @@ void obj_link(fvmobjptr &vmobjptr, const vmobjptridx_t obj, const vmsegptridx_t 
 	assert(obj->next == object_none);
 	assert(obj->prev == object_none);
 	obj_link_unchecked(vmobjptr, obj, segnum);
+}
+
 }
 
 void obj_link_unchecked(fvmobjptr &vmobjptr, const vmobjptridx_t obj, const vmsegptridx_t segnum)
@@ -990,6 +1008,8 @@ imobjptridx_t obj_allocate(d_level_unique_object_state &LevelUniqueObjectState)
 	assert(r->type == OBJ_NONE);
 	return r;
 }
+
+namespace {
 
 //frees up an object.  Generally, obj_delete() should be called to get
 //rid of an object.  This function deallocates the object entry after
@@ -1105,12 +1125,14 @@ static void free_object_slots(uint_fast32_t num_used)
 		return;
 }
 
+}
+
 //-----------------------------------------------------------------------------
 //initialize a new object.  adds to the list for the given segment
 //note that segnum is really just a suggestion, since this routine actually
 //searches for the correct segment
 //returns the object number
-imobjptridx_t obj_create(const object_type_t type, const unsigned id, vmsegptridx_t segnum, const vms_vector &pos, const vms_matrix *const orient, const fix size, const typename object::control_type ctype, const typename object::movement_type mtype, const render_type_t rtype)
+imobjptridx_t obj_create(d_level_unique_object_state &LevelUniqueObjectState, const d_level_shared_segment_state &LevelSharedSegmentState, d_level_unique_segment_state &LevelUniqueSegmentState, const object_type_t type, const unsigned id, vmsegptridx_t segnum, const vms_vector &pos, const vms_matrix *const orient, const fix size, const typename object::control_type ctype, const typename object::movement_type mtype, const render_type_t rtype)
 {
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
 	auto &Objects = LevelUniqueObjectState.Objects;
@@ -1122,7 +1144,7 @@ imobjptridx_t obj_create(const object_type_t type, const unsigned id, vmsegptrid
 		return object_none;
 
 	auto &vcvertptr = Vertices.vcptr;
-	if (get_seg_masks(vcvertptr, pos, segnum, 0).centermask != 0)
+	if (get_seg_masks(vcvertptr, pos, segnum, 0).centermask != sidemask_t{})
 	{
 		const auto &&p = find_point_seg(LevelSharedSegmentState, LevelUniqueSegmentState, pos, segnum);
 		if (p == segment_none) {
@@ -1198,26 +1220,34 @@ imobjptridx_t obj_create(const object_type_t type, const unsigned id, vmsegptrid
 
 	obj_link_unchecked(Objects.vmptr, obj, segnum);
 
-	//	Set (or not) persistent bit in phys_info.
-	if (obj->type == OBJ_WEAPON) {
-		assert(obj->control_source == object::control_type::weapon);
-		if (Weapon_info[get_weapon_id(obj)].persistent != weapon_info::persistence_flag::terminate_on_impact)
-			obj->mtype.phys_info.flags |= PF_PERSISTENT;
-		obj->ctype.laser_info.creation_time = GameTime64;
-		obj->ctype.laser_info.clear_hitobj();
-		obj->ctype.laser_info.multiplier = F1_0;
-#if defined(DXX_BUILD_DESCENT_II)
-		obj->ctype.laser_info.last_afterburner_time = 0;
-#endif
-	}
-
 	if (obj->control_source == object::control_type::explosion)
 		obj->ctype.expl_info.next_attach = obj->ctype.expl_info.prev_attach = obj->ctype.expl_info.attach_parent = object_none;
 
 	if (obj->type == OBJ_DEBRIS)
 		++ LevelUniqueObjectState.Debris_object_count;
-
 	return obj;
+}
+
+imobjptridx_t obj_weapon_create(d_level_unique_object_state &LevelUniqueObjectState, const d_level_shared_segment_state &LevelSharedSegmentState, d_level_unique_segment_state &LevelUniqueSegmentState, const weapon_info_array &Weapon_info, const unsigned id, const vmsegptridx_t segnum, const vms_vector &pos, const fix size, const render_type_t rtype)
+{
+	constexpr auto ctype = object::control_type::weapon;
+	constexpr auto mtype = object::movement_type::physics;
+	constexpr const vms_matrix *orient = nullptr;
+	const auto &&objp = obj_create(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, OBJ_WEAPON, id, segnum, pos, orient, size, ctype, mtype, rtype);
+	if (objp == object_none)
+		return objp;
+	auto &obj = *objp;
+	//	Set (or not) persistent bit in phys_info.
+	assert(obj.control_source == object::control_type::weapon);
+	if (Weapon_info[id].persistent != weapon_info::persistence_flag::terminate_on_impact)
+		obj.mtype.phys_info.flags |= PF_PERSISTENT;
+	obj.ctype.laser_info.creation_time = GameTime64;
+	obj.ctype.laser_info.clear_hitobj();
+	obj.ctype.laser_info.multiplier = F1_0;
+#if defined(DXX_BUILD_DESCENT_II)
+	obj.ctype.laser_info.last_afterburner_time = 0;
+#endif
+	return objp;
 }
 
 //create a copy of an object. returns new object number
@@ -1297,15 +1327,16 @@ void obj_delete(d_level_unique_object_state &LevelUniqueObjectState, segment_arr
 #define	DEATH_SEQUENCE_LENGTH			(F1_0*5)
 #define	DEATH_SEQUENCE_EXPLODE_TIME	(F1_0*2)
 
-object	*Dead_player_camera = NULL;	//	Object index of object watching deader.
-static const object *Viewer_save;
+object *Dead_player_camera;	//	Object index of object watching deader.
 }
 namespace dcx {
 player_dead_state Player_dead_state = player_dead_state::no;			//	If !0, then player is dead, but game continues so he can watch.
+namespace {
 static int Player_flags_save;
 static fix Camera_to_player_dist_goal = F1_0*4;
 static typename object::control_type Control_type_save;
 static render_type_t Render_type_save;
+}
 
 unsigned laser_parent_is_matching_signature(const laser_parent &l, const object_base &o)
 {
@@ -1317,6 +1348,7 @@ unsigned laser_parent_is_matching_signature(const laser_parent &l, const object_
 }
 
 namespace dsx {
+
 //	------------------------------------------------------------------------------------------------------------------
 void dead_player_end(void)
 {
@@ -1345,6 +1377,8 @@ void dead_player_end(void)
 	player_info.Player_eggs_dropped = false;
 }
 
+namespace {
+
 //	------------------------------------------------------------------------------------------------------------------
 //	Camera is less than size of player away from
 static void set_camera_pos(vms_vector &camera_pos, const vcobjptridx_t objp)
@@ -1357,34 +1391,35 @@ static void set_camera_pos(vms_vector &camera_pos, const vcobjptridx_t objp)
 
 	if (camera_player_dist < Camera_to_player_dist_goal) {
 		//	Camera is too close to player object, so move it away.
-		fvi_query	fq;
 		fvi_info		hit_data;
 
 		auto player_camera_vec = vm_vec_sub(camera_pos, objp->pos);
 		if ((player_camera_vec.x == 0) && (player_camera_vec.y == 0) && (player_camera_vec.z == 0))
 			player_camera_vec.x += F1_0/16;
 
-		hit_data.hit_type = HIT_WALL;
+		auto hit_type = fvi_hit_type::Wall;
 		far_scale = F1_0;
 
-		while ((hit_data.hit_type != HIT_NONE) && (count++ < 6)) {
+		while (hit_type != fvi_hit_type::None && count++ < 6)
+		{
 			vm_vec_normalize_quick(player_camera_vec);
 			vm_vec_scale(player_camera_vec, Camera_to_player_dist_goal);
 
-			fq.p0 = &objp->pos;
 			const auto closer_p1 = vm_vec_add(objp->pos, player_camera_vec);		//	This is the actual point we want to put the camera at.
 			vm_vec_scale(player_camera_vec, far_scale);						//	...but find a point 50% further away...
 			const auto local_p1 = vm_vec_add(objp->pos, player_camera_vec);		//	...so we won't have to do as many cuts.
 
-			fq.p1 = &local_p1;
-			fq.startseg = objp->segnum;
-			fq.rad = 0;
-			fq.thisobjnum = objp;
-			fq.ignore_obj_list.first = nullptr;
-			fq.flags = 0;
-			find_vector_intersection(fq, hit_data);
-
-			if (hit_data.hit_type == HIT_NONE) {
+			hit_type = find_vector_intersection(fvi_query{
+				objp->pos,
+				local_p1,
+				fvi_query::unused_ignore_obj_list,
+				fvi_query::unused_LevelUniqueObjectState,
+				fvi_query::unused_Robot_info,
+				0,
+				objp,
+			}, objp->segnum, 0, hit_data);
+			if (hit_type == fvi_hit_type::None)
+			{
 				camera_pos = closer_p1;
 			} else {
 				make_random_vector(player_camera_vec);
@@ -1394,8 +1429,10 @@ static void set_camera_pos(vms_vector &camera_pos, const vcobjptridx_t objp)
 	}
 }
 
+}
+
 //	------------------------------------------------------------------------------------------------------------------
-window_event_result dead_player_frame()
+window_event_result dead_player_frame(const d_robot_info_array &Robot_info)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vcobjptridx = Objects.vcptridx;
@@ -1410,7 +1447,7 @@ window_event_result dead_player_frame()
 		//	If unable to create camera at time of death, create now.
 		if (Dead_player_camera == Viewer_save) {
 			const auto &player = get_local_plrobj();
-			const auto &&objnum = obj_create(OBJ_CAMERA, 0, vmsegptridx(player.segnum), player.pos, &player.orient, 0, object::control_type::None, object::movement_type::None, RT_NONE);
+			const auto &&objnum = obj_create(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, OBJ_CAMERA, 0, vmsegptridx(player.segnum), player.pos, &player.orient, 0, object::control_type::None, object::movement_type::None, RT_NONE);
 
 			if (objnum != object_none)
 				Viewer = Dead_player_camera = objnum;
@@ -1470,10 +1507,10 @@ window_event_result dead_player_frame()
 					multi_send_player_deres(deres_explode);
 				}
 
-				explode_badass_player(cobjp);
+				explode_badass_player(Robot_info, cobjp);
 
 				//is this next line needed, given the badass call above?
-				explode_object(cobjp,0);
+				explode_object(LevelUniqueObjectState, Robot_info, LevelSharedSegmentState, LevelUniqueSegmentState, cobjp, 0);
 				ConsoleObject->flags &= ~OF_SHOULD_BE_DEAD;		//don't really kill player
 				ConsoleObject->render_type = RT_NONE;				//..just make him disappear
 				ConsoleObject->type = OBJ_GHOST;						//..and kill intersections
@@ -1511,6 +1548,8 @@ window_event_result dead_player_frame()
 	return window_event_result::handled;
 }
 
+namespace {
+
 //	------------------------------------------------------------------------------------------------------------------
 static void start_player_death_sequence(object &player)
 {
@@ -1522,7 +1561,7 @@ static void start_player_death_sequence(object &player)
 	assert(&player == ConsoleObject);
 	if (Player_dead_state != player_dead_state::no ||
 		Dead_player_camera != NULL ||
-		((Game_mode & GM_MULTI) && (get_local_player().connected != CONNECT_PLAYING)))
+		((Game_mode & GM_MULTI) && get_local_player().connected != player_connection_status::playing))
 		return;
 
 	//Assert(Dead_player_camera == NULL);
@@ -1575,7 +1614,7 @@ static void start_player_death_sequence(object &player)
 	vm_vec_zero(player.mtype.phys_info.rotthrust);
 	vm_vec_zero(player.mtype.phys_info.thrust);
 
-	const auto &&objnum = obj_create(OBJ_CAMERA, 0, vmsegptridx(player.segnum), player.pos, &player.orient, 0, object::control_type::None, object::movement_type::None, RT_NONE);
+	const auto &&objnum = obj_create(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, OBJ_CAMERA, 0, vmsegptridx(player.segnum), player.pos, &player.orient, 0, object::control_type::None, object::movement_type::None, RT_NONE);
 	Viewer_save = Viewer;
 	if (objnum != object_none)
 		Viewer = Dead_player_camera = objnum;
@@ -1584,7 +1623,7 @@ static void start_player_death_sequence(object &player)
 		Dead_player_camera = ConsoleObject;
 	}
 
-	select_cockpit(CM_LETTERBOX);
+	select_cockpit(cockpit_mode_t::letterbox);
 	if (Newdemo_state == ND_STATE_RECORDING)
 		newdemo_record_letterbox();
 
@@ -1628,6 +1667,8 @@ static void obj_delete_all_that_should_be_dead()
 	}
 }
 
+}
+
 //when an object has moved into a new segment, this function unlinks it
 //from its old segment, and links it into the new segment
 void obj_relink(fvmobjptr &vmobjptr, fvmsegptr &vmsegptr, const vmobjptridx_t objnum, const vmsegptridx_t newsegnum)
@@ -1657,6 +1698,8 @@ void obj_relink_all(void)
 	}
 }
 
+namespace {
+
 //process a continuously-spinning object
 static void spin_object(object_base &obj)
 {
@@ -1673,8 +1716,10 @@ static void spin_object(object_base &obj)
 	check_and_fix_matrix(obj.orient);
 }
 
+}
+
 #if defined(DXX_BUILD_DESCENT_II)
-imobjidx_t d_guided_missile_indices::get_player_active_guided_missile(const unsigned pnum) const
+imobjidx_t d_guided_missile_indices::get_player_active_guided_missile(const playernum_t pnum) const
 {
 	return operator[](pnum);
 }
@@ -1695,7 +1740,7 @@ bool d_guided_missile_indices::debug_check_current_object(const object_base &obj
 }
 
 template <typename R, typename F>
-R d_guided_missile_indices::get_player_active_guided_missile_tmpl(F &fobjptr, const unsigned pnum) const
+R d_guided_missile_indices::get_player_active_guided_missile_tmpl(F &fobjptr, const playernum_t pnum) const
 {
 	const auto gmidx = get_player_active_guided_missile(pnum);
 	if (gmidx == object_none)
@@ -1706,23 +1751,23 @@ R d_guided_missile_indices::get_player_active_guided_missile_tmpl(F &fobjptr, co
 	return gmobj;
 }
 
-imobjptr_t d_guided_missile_indices::get_player_active_guided_missile(fvmobjptr &vmobjptr, const unsigned pnum) const
+imobjptr_t d_guided_missile_indices::get_player_active_guided_missile(fvmobjptr &vmobjptr, const playernum_t pnum) const
 {
 	return this->template get_player_active_guided_missile_tmpl<imobjptr_t>(vmobjptr, pnum);
 }
 
-imobjptridx_t d_guided_missile_indices::get_player_active_guided_missile(fvmobjptridx &vmobjptridx, const unsigned pnum) const
+imobjptridx_t d_guided_missile_indices::get_player_active_guided_missile(fvmobjptridx &vmobjptridx, const playernum_t pnum) const
 {
 	return this->template get_player_active_guided_missile_tmpl<imobjptridx_t>(vmobjptridx, pnum);
 }
 
-void d_guided_missile_indices::set_player_active_guided_missile(const vmobjidx_t obji, const unsigned pnum)
+void d_guided_missile_indices::set_player_active_guided_missile(const vmobjidx_t obji, const playernum_t pnum)
 {
 	auto &i = operator[](pnum);
 	i = obji;
 }
 
-void d_guided_missile_indices::clear_player_active_guided_missile(const unsigned pnum)
+void d_guided_missile_indices::clear_player_active_guided_missile(const playernum_t pnum)
 {
 	auto &i = operator[](pnum);
 	i = object_none;
@@ -1733,9 +1778,11 @@ int Drop_afterburner_blob_flag;		//ugly hack
 //returns true if player is in lava
 #endif
 
+namespace {
+
 //--------------------------------------------------------------------
 //move an object for the current frame
-static window_event_result object_move_one(const vmobjptridx_t obj, control_info &Controls)
+static window_event_result object_move_one(const d_level_shared_robot_info_state &LevelSharedRobotInfoState, const vmobjptridx_t obj, control_info &Controls)
 {
 #if defined(DXX_BUILD_DESCENT_II)
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
@@ -1763,13 +1810,11 @@ static window_event_result object_move_one(const vmobjptridx_t obj, control_info
 		if (fuel > 0 )	{
 			energy += fuel;
 		}
-#if defined(DXX_BUILD_DESCENT_II)
-		auto &pl_shields = get_local_plrobj().shields;
+		auto &pl_shields = obj->shields;
 		const fix shields = repaircen_give_shields(segp, INITIAL_SHIELDS - pl_shields);
 		if (shields > 0) {
 			pl_shields += shields;
 		}
-#endif
 	}
 
 	{
@@ -1817,14 +1862,14 @@ static window_event_result object_move_one(const vmobjptridx_t obj, control_info
 		case object::control_type::ai:
 			//NOTE LINK TO object::control_type::morph ABOVE!!!
 			if (Game_suspended & SUSP_ROBOTS) return window_event_result::ignored;
-			do_ai_frame(obj);
+			do_ai_frame(LevelSharedRobotInfoState, obj);
 			break;
 
 		case object::control_type::weapon:
-			Laser_do_weapon_sequence(obj);
+			Laser_do_weapon_sequence(LevelSharedRobotInfoState.Robot_info, obj);
 			break;
 		case object::control_type::explosion:
-			do_explosion_sequence(obj);
+			do_explosion_sequence(LevelSharedRobotInfoState.Robot_info, obj);
 			break;
 
 		case object::control_type::slew:
@@ -1847,7 +1892,7 @@ static window_event_result object_move_one(const vmobjptridx_t obj, control_info
 //			break;
 
 		case object::control_type::debris:
-			do_debris_frame(obj);
+			do_debris_frame(LevelSharedRobotInfoState.Robot_info, obj);
 			break;
 
 		case object::control_type::light:
@@ -1857,7 +1902,7 @@ static window_event_result object_move_one(const vmobjptridx_t obj, control_info
 			break;		//doesn't do anything
 
 		case object::control_type::cntrlcen:
-			do_controlcen_frame(obj);
+			do_controlcen_frame(LevelSharedRobotInfoState.Robot_info, obj);
 			break;
 
 		default:
@@ -1869,10 +1914,10 @@ static window_event_result object_move_one(const vmobjptridx_t obj, control_info
 	if (obj->lifeleft < 0 ) {		// We died of old age
 		obj->flags |= OF_SHOULD_BE_DEAD;
 		if ( obj->type==OBJ_WEAPON && Weapon_info[get_weapon_id(obj)].damage_radius )
-			explode_badass_weapon(obj, obj->pos);
+			explode_badass_weapon(LevelSharedRobotInfoState.Robot_info, obj, obj->pos);
 #if defined(DXX_BUILD_DESCENT_II)
 		else if ( obj->type==OBJ_ROBOT)	//make robots explode
-			explode_object(obj,0);
+			explode_object(LevelUniqueObjectState, LevelSharedRobotInfoState.Robot_info, LevelSharedSegmentState, LevelUniqueSegmentState, obj, 0);
 #endif
 	}
 
@@ -1887,7 +1932,7 @@ static window_event_result object_move_one(const vmobjptridx_t obj, control_info
 			break;				//this doesn't move
 
 		case object::movement_type::physics:	//move by physics
-			result = do_physics_sim(obj, obj_previous_position, obj->type == OBJ_PLAYER ? (prepare_seglist = true, phys_visited_segs.nsegs = 0, &phys_visited_segs) : nullptr);
+			result = do_physics_sim(LevelSharedRobotInfoState.Robot_info, obj, obj_previous_position, obj->type == OBJ_PLAYER ? (prepare_seglist = true, phys_visited_segs.nsegs = 0, &phys_visited_segs) : nullptr);
 			break;
 
 		case object::movement_type::spinning:
@@ -1932,11 +1977,11 @@ static window_event_result object_move_one(const vmobjptridx_t obj, control_info
 			auto &playing = obj->ctype.player_info.lavafall_hiss_playing;
 			const auto &&segp = vcsegptr(obj->segnum);
 			auto &vcvertptr = Vertices.vcptr;
-			if (const auto sidemask = get_seg_masks(vcvertptr, obj->pos, segp, obj->size).sidemask)
+			if (const auto sidemask = get_seg_masks(vcvertptr, obj->pos, segp, obj->size).sidemask; sidemask != sidemask_t{})
 			{
 				for (const auto sidenum : MAX_SIDES_PER_SEGMENT)
 				{
-					if (!(sidemask & (1 << sidenum)))
+					if (!(sidemask & build_sidemask(sidenum)))
 						continue;
 					const auto wall_num = segp->shared_segment::sides[sidenum].wall_num;
 					if (wall_num != wall_none && vcwallptr(wall_num)->type == WALL_ILLUSION)
@@ -2029,7 +2074,7 @@ static window_event_result object_move_one(const vmobjptridx_t obj, control_info
 
 //--------------------------------------------------------------------
 //move all objects for the current frame
-static window_event_result object_move_all()
+static window_event_result object_move_all(const d_level_shared_robot_info_state &LevelSharedRobotInfoState)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vmobjptridx = Objects.vmptridx;
@@ -2049,7 +2094,7 @@ static window_event_result object_move_all()
 	range_for (const auto &&objp, vmobjptridx)
 	{
 		if ( (objp->type != OBJ_NONE) && (!(objp->flags&OF_SHOULD_BE_DEAD)) )	{
-			result = std::max(object_move_one(objp, Controls), result);
+			result = std::max(object_move_one(LevelSharedRobotInfoState, objp, Controls), result);
 		}
 	}
 
@@ -2059,15 +2104,17 @@ static window_event_result object_move_all()
 	return result;
 }
 
-window_event_result game_move_all_objects()
-{
-	LevelUniqueObjectState.last_console_player_position = ConsoleObject->pos;
-	return object_move_all();
 }
 
-window_event_result endlevel_move_all_objects()
+window_event_result game_move_all_objects(const d_level_shared_robot_info_state &LevelSharedRobotInfoState)
 {
-	return object_move_all();
+	LevelUniqueObjectState.last_console_player_position = ConsoleObject->pos;
+	return object_move_all(LevelSharedRobotInfoState);
+}
+
+window_event_result endlevel_move_all_objects(const d_level_shared_robot_info_state &LevelSharedRobotInfoState)
+{
+	return object_move_all(LevelSharedRobotInfoState);
 }
 
 //--unused-- // -----------------------------------------------------------
@@ -2272,6 +2319,8 @@ void fix_object_segs()
 //--unused-- 	
 //--unused-- }
 
+namespace {
+
 #if defined(DXX_BUILD_DESCENT_I)
 #define object_is_clearable_weapon(W,a,b)	object_is_clearable_weapon(a,b)
 #endif
@@ -2287,6 +2336,8 @@ static unsigned object_is_clearable_weapon(const weapon_info_array &Weapon_info,
 	if (clear_all)
 		return clear_all;
 	return !is_proximity_bomb_or_player_smart_mine(weapon_id);
+}
+
 }
 
 //delete objects, such as weapons & explosions, that shouldn't stay between levels
@@ -2332,42 +2383,84 @@ void obj_attach(object_array &Objects, const vmobjptridx_t parent, const vmobjpt
 	Assert(sub->ctype.expl_info.prev_attach != sub);
 }
 
-//dettaches one object
-void obj_detach_one(object_array &Objects, object &sub)
+namespace {
+
+//detaches one object
+static objnum_t obj_detach_one(object_array &Objects, object &sub)
 {
 	Assert(sub.flags & OF_ATTACHED);
 	Assert(sub.ctype.expl_info.attach_parent != object_none);
 
-	const auto &&parent_objp = Objects.vcptr(sub.ctype.expl_info.attach_parent);
-	if (parent_objp->type == OBJ_NONE || parent_objp->attached_obj == object_none)
+	/* Check for the impossible case that the parent does not exist, or does
+	 * not have any attached children.
+	 */
+	if (const auto &parent_objp = *Objects.vcptr(sub.ctype.expl_info.attach_parent); parent_objp.type == OBJ_NONE || parent_objp.attached_obj == object_none)
 	{
 		sub.flags &= ~OF_ATTACHED;
-		return;
+		return object_none;
 	}
 
+	/* If this is not the last sub-object in the list */
 	if (sub.ctype.expl_info.next_attach != object_none)
 	{
+		/* Find the prev pointer of the next object */
 		auto &a = Objects.vmptr(sub.ctype.expl_info.next_attach)->ctype.expl_info.prev_attach;
+		/* Check that sub->next->prev is `sub` */
 		assert(Objects.vcptr(a) == &sub);
+		/* Change the next object's prev pointer to point to `sub`'s
+		 * predecessor.  This is one half of the work required to remove `sub`
+		 * from the chain of sub-objects.  The other half is handled below.
+		 */
 		a = sub.ctype.expl_info.prev_attach;
 	}
 
+	/* If `sub` is the first sub-object in the chain, then `use_prev_attach` is
+	 * false and the update should target the parent object.
+	 *
+	 * If `sub` is not the first sub-object in the chain, then
+	 * `use_prev_attach` is true and the update should target the previous
+	 * object in the chain.
+	 */
 	const auto use_prev_attach = (sub.ctype.expl_info.prev_attach != object_none);
+	/* If `use_prev_attach` is true, set `o` to the previous object and change
+	 * `sub->prev` to object_none so that a future call will set
+	 * `use_prev_attach` to false.
+	 *
+	 * If `use_prev_attach` is false, set `o` to the parent object.
+	 */
 	auto &o = *Objects.vmptr(use_prev_attach ? std::exchange(sub.ctype.expl_info.prev_attach, object_none) : sub.ctype.expl_info.attach_parent);
+	/* If `use_prev_attach` is true, then update the `next` reference in the
+	 * previous object.  This is the second half of removing `sub` from a chain
+	 * of objects.
+	 *
+	 * If `use_prev_attach` is false, update `attached_obj` on the parent
+	 * object, so that the parent has no attached objects.  This assumes that
+	 * `use_prev_attach` is false if and only if `sub` is the first child of
+	 * the parent object.  If `sub` is not the first child, then `sub` should
+	 * have a back pointer (and thus `use_prev_attach` would be true) referring
+	 * to a previous child, which may or may not be the first child.
+	 */
 	auto &update_attach = use_prev_attach ? o.ctype.expl_info.next_attach : o.attached_obj;
+	/* Assert that the link that will be overwritten points to `sub`.  If the
+	 * link is from parent to child, then failure means that sub was not the
+	 * first child of the parent.  If the link is from previous to next, then
+	 * failure means that sub pointed back to an element that did not point
+	 * forward to sub.
+	 */
 	assert(Objects.vcptr(update_attach) == &sub);
-	update_attach = sub.ctype.expl_info.next_attach;
-
-	sub.ctype.expl_info.next_attach = object_none;
 	sub.flags &= ~OF_ATTACHED;
-
+	const auto next_attach = std::exchange(sub.ctype.expl_info.next_attach, object_none);
+	update_attach = next_attach;
+	return next_attach;
 }
 
-//dettaches all objects from this object
+//detaches all objects from this object
 static void obj_detach_all(object_array &Objects, object_base &parent)
 {
-	while (parent.attached_obj != object_none)
-		obj_detach_one(Objects, Objects.vmptr(parent.attached_obj));
+	for (auto attached_obj = parent.attached_obj; attached_obj != object_none;)
+		attached_obj = obj_detach_one(Objects, Objects.vmptr(attached_obj));
+}
+
 }
 
 #if defined(DXX_BUILD_DESCENT_II)
@@ -2376,16 +2469,16 @@ imobjptridx_t drop_marker_object(const vms_vector &pos, const vmsegptridx_t segn
 {
 	auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
 	const auto Marker_model_num = LevelSharedPolygonModelState.Marker_model_num;
-	if (Marker_model_num >= Polygon_models.size())
+	if (Marker_model_num == polygon_model_index::None)
 	{
-		con_printf(CON_URGENT, "%s:%u: failed to drop marker object: invalid model number %u", __FILE__, __LINE__, Marker_model_num);
+		con_printf(CON_URGENT, "%s:%u: failed to drop marker object: invalid model number %u", __FILE__, __LINE__, underlying_value(Marker_model_num));
 		return object_none;
 	}
 	const auto movement_type =
 		((Game_mode & GM_MULTI) && !(Game_mode & GM_MULTI_COOP) && Netgame.Allow_marker_view)
 		? object::movement_type::None
 		: object::movement_type::spinning;
-	const auto &&obj = obj_create(OBJ_MARKER, static_cast<unsigned>(marker_num), segnum, pos, &orient, Polygon_models[Marker_model_num].rad, object::control_type::None, movement_type, RT_POLYOBJ);
+	const auto &&obj = obj_create(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, OBJ_MARKER, underlying_value(marker_num), segnum, pos, &orient, Polygon_models[Marker_model_num].rad, object::control_type::None, movement_type, RT_POLYOBJ);
 	if (obj != object_none) {
 		auto &o = *obj;
 		o.rtype.pobj_info.model_num = Marker_model_num;

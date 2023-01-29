@@ -78,8 +78,6 @@ const enumerated_array<weapon_id_type, MAX_SECONDARY_WEAPONS, secondary_weapon_i
 	}
 }};
 
-//for each Secondary weapon, which gun it fires out of
-const std::array<ubyte, MAX_SECONDARY_WEAPONS> Secondary_weapon_to_gun_num{{4,4,7,7,7}};
 }
 #elif defined(DXX_BUILD_DESCENT_II)
 #include "fvi.h"
@@ -113,9 +111,6 @@ const enumerated_array<weapon_id_type, MAX_SECONDARY_WEAPONS, secondary_weapon_i
 		weapon_id_type::EARTHSHAKER_ID
 	}
 }};
-
-//for each Secondary weapon, which gun it fires out of
-const std::array<ubyte, MAX_SECONDARY_WEAPONS> Secondary_weapon_to_gun_num{{4,4,7,7,7,4,4,7,4,7}};
 
 namespace {
 
@@ -161,6 +156,23 @@ static T get_alternate_weapon(const T current_weapon, const T base_weapon)
 #endif
 
 namespace dsx {
+
+//for each Secondary weapon, which gun it fires out of
+const std::array<gun_num_t, MAX_SECONDARY_WEAPONS> Secondary_weapon_to_gun_num{{
+	gun_num_t::_4,
+	gun_num_t::_4,
+	gun_num_t::_7,
+	gun_num_t::_7,
+	gun_num_t::_7,
+#if defined(DXX_BUILD_DESCENT_II)
+	gun_num_t::_4,
+	gun_num_t::_4,
+	gun_num_t::_7,
+	gun_num_t::_4,
+	gun_num_t::_7
+#endif
+}};
+
 const enumerated_array<uint8_t, MAX_SECONDARY_WEAPONS, secondary_weapon_index_t> Secondary_ammo_max{{
 	{
 		20, 10, 10, 5, 5,
@@ -262,11 +274,18 @@ window_event_result weapon_reorder_menu<cycle_weapon_state>::event_handler(const
 
 }
 
+template <typename Accessor>
+static void check_enum(Accessor &, polygon_model_index &pmi)
+{
+	pmi = build_polygon_model_index_from_untrusted(underlying_value(pmi));
+}
+
 }
 
 // autoselect ordering
 
 namespace dsx {
+namespace {
 #if defined(DXX_BUILD_DESCENT_I)
 constexpr std::array<uint8_t, MAX_PRIMARY_WEAPONS + 1> DefaultPrimaryOrder{{ 4, 3, 2, 1, 0, 255 }};
 constexpr std::array<uint8_t, MAX_SECONDARY_WEAPONS + 1> DefaultSecondaryOrder{{ 4, 3, 1, 0, 255, 2 }};
@@ -286,6 +305,7 @@ static primary_weapon_index_t get_mapped_weapon_index(const player_info &player_
 		return primary_weapon_index_t::SUPER_LASER_INDEX;
 #endif
 	return weapon_index;
+}
 }
 }
 
@@ -1180,16 +1200,22 @@ int pick_up_vulcan_ammo(player_info &player_info, uint_fast32_t ammo_count, cons
 	if (old_ammo >= max)
 		return 0;
 
-	plr_vulcan_ammo += ammo_count;
+	const auto amount_can_add = max - old_ammo;
+	/* If the amount available will not exceed maximum, then add
+	 * everything and report the entire amount as used.
+	 * If the amount available would exceed maximum, set player's count
+	 * to maximum and report as used the delta between maximum and the
+	 * player's previous count (`old_ammo`).
+	 */
+	const auto used = (ammo_count < amount_can_add)
+		? (plr_vulcan_ammo += ammo_count, ammo_count)
+		: (plr_vulcan_ammo = max, amount_can_add);
 
-	if (plr_vulcan_ammo > max) {
-		ammo_count += (max - plr_vulcan_ammo);
-		plr_vulcan_ammo = max;
-	}
 	if (change_weapon &&
+		plr_vulcan_ammo &&
 		!old_ammo)
 		maybe_autoselect_vulcan_weapon(player_info);
-	return ammo_count;	//return amount used
+	return used;	//return amount used
 }
 
 #if defined(DXX_BUILD_DESCENT_II)
@@ -1348,9 +1374,9 @@ void smega_rock_stuff(void)
 	*least = GameTime64;
 }
 
-static int	Super_mines_yes = 1;
-
 namespace {
+
+static uint8_t Super_mines_yes = 1;
 
 static bool immediate_detonate_smart_mine(const vcobjptridx_t smart_mine, const vcobjptridx_t target)
 {
@@ -1361,14 +1387,17 @@ static bool immediate_detonate_smart_mine(const vcobjptridx_t smart_mine, const 
 	if (likely((d_tick_count ^ (static_cast<vcobjptridx_t::integral_type>(smart_mine) + static_cast<vcobjptridx_t::integral_type>(target))) % 4))
 		// Maybe next frame
 		return false;
-	fvi_query	fq{};
 	fvi_info		hit_data;
-	fq.startseg = smart_mine->segnum;
-	fq.p0						= &smart_mine->pos;
-	fq.p1						= &target->pos;
-	fq.thisobjnum			= smart_mine;
-	auto fate = find_vector_intersection(fq, hit_data);
-	return fate != HIT_WALL;
+	auto fate = find_vector_intersection(fvi_query{
+		smart_mine->pos,
+		target->pos,
+		fvi_query::unused_ignore_obj_list,
+		fvi_query::unused_LevelUniqueObjectState,
+		fvi_query::unused_Robot_info,
+		0,
+		smart_mine,
+	}, smart_mine->segnum, 0, hit_data);
+	return fate != fvi_hit_type::Wall;
 }
 
 }
@@ -1429,7 +1458,7 @@ void process_super_mines_frame(void)
 
 //this function is for when the player intentionally drops a powerup
 //this function is based on drop_powerup()
-imobjptridx_t spit_powerup(const d_vclip_array &Vclip, const object_base &spitter, const unsigned id, const unsigned seed)
+imobjptridx_t spit_powerup(d_level_unique_object_state &LevelUniqueObjectState, const d_level_shared_segment_state &LevelSharedSegmentState, d_level_unique_segment_state &LevelUniqueSegmentState, const d_vclip_array &Vclip, const object_base &spitter, const unsigned id, const unsigned seed)
 {
 	d_srand(seed);
 
@@ -1459,47 +1488,43 @@ imobjptridx_t spit_powerup(const d_vclip_array &Vclip, const object_base &spitte
 		}
 	}
 
-	const auto &&obj = obj_create(OBJ_POWERUP, id, vmsegptridx(spitter.segnum), new_pos, &vmd_identity_matrix, Powerup_info[id].size, object::control_type::powerup, object::movement_type::physics, RT_POWERUP);
+	const auto &&objp = obj_create(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, OBJ_POWERUP, id, vmsegptridx(spitter.segnum), new_pos, &vmd_identity_matrix, Powerup_info[id].size, object::control_type::powerup, object::movement_type::physics, RT_POWERUP);
 
-	if (obj == object_none)
-	{
-		Int3();
-		return object_none;
-	}
-	obj->mtype.phys_info.velocity = new_velocity;
-	obj->mtype.phys_info.drag = 512;	//1024;
-	obj->mtype.phys_info.mass = F1_0;
+	if (objp == object_none)
+		return objp;
+	auto &obj = *objp;
+	obj.mtype.phys_info.velocity = new_velocity;
+	obj.mtype.phys_info.drag = 512;	//1024;
+	obj.mtype.phys_info.mass = F1_0;
 
-	obj->mtype.phys_info.flags = PF_BOUNCE;
+	obj.mtype.phys_info.flags = PF_BOUNCE;
 
-	obj->rtype.vclip_info.vclip_num = Powerup_info[get_powerup_id(obj)].vclip_num;
-	obj->rtype.vclip_info.frametime = Vclip[obj->rtype.vclip_info.vclip_num].frame_time;
-	obj->rtype.vclip_info.framenum = 0;
+	obj.rtype.vclip_info.vclip_num = Powerup_info[get_powerup_id(obj)].vclip_num;
+	obj.rtype.vclip_info.frametime = Vclip[obj.rtype.vclip_info.vclip_num].frame_time;
+	obj.rtype.vclip_info.framenum = 0;
 
 	if (&spitter == ConsoleObject)
-		obj->ctype.powerup_info.flags |= PF_SPAT_BY_PLAYER;
+		obj.ctype.powerup_info.flags |= PF_SPAT_BY_PLAYER;
 
-	switch (get_powerup_id(obj)) {
+	switch (id)
+	{
 		case POW_MISSILE_1:
 		case POW_MISSILE_4:
 		case POW_SHIELD_BOOST:
 		case POW_ENERGY:
-			obj->lifeleft = (d_rand() + F1_0*3) * 64;		//	Lives for 3 to 3.5 binary minutes (a binary minute is 64 seconds)
+			obj.lifeleft = (d_rand() + F1_0*3) * 64;		//	Lives for 3 to 3.5 binary minutes (a binary minute is 64 seconds)
 			if (Game_mode & GM_MULTI)
-				obj->lifeleft /= 2;
+				obj.lifeleft /= 2;
 			break;
 		default:
-			//if (Game_mode & GM_MULTI)
-			//	obj->lifeleft = (d_rand() + F1_0*3) * 64;		//	Lives for 5 to 5.5 binary minutes (a binary minute is 64 seconds)
 			break;
 	}
-	return obj;
+	return objp;
 }
 
 void DropCurrentWeapon (player_info &player_info)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
-	auto &vmobjptr = Objects.vmptr;
 	if (LevelUniqueObjectState.num_objects >= Objects.size())
 		return;
 
@@ -1551,7 +1576,7 @@ void DropCurrentWeapon (player_info &player_info)
 	}
 
 	const auto seed = d_rand();
-	const auto objnum = spit_powerup(Vclip, vmobjptr(ConsoleObject), drop_type, seed);
+	const auto objnum = spit_powerup(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, Vclip, *ConsoleObject, drop_type, seed);
 	if (objnum == object_none)
 	{
 		HUD_init_message(HM_DEFAULT, "Failed to drop %s!", weapon_name);
@@ -1605,7 +1630,6 @@ void DropCurrentWeapon (player_info &player_info)
 void DropSecondaryWeapon (player_info &player_info)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
-	auto &vmobjptr = Objects.vmptr;
 	int seed;
 	ushort sub_ammo=0;
 
@@ -1616,7 +1640,7 @@ void DropSecondaryWeapon (player_info &player_info)
 	auto &secondary_ammo = player_info.secondary_ammo[Secondary_weapon];
 	if (secondary_ammo == 0)
 	{
-		HUD_init_message_literal(HM_DEFAULT, "No secondary weapon to drop!");
+		HUD_init_message(HM_DEFAULT, "Cannot drop %s: you have none to drop!", SECONDARY_WEAPON_NAMES(Secondary_weapon));
 		return;
 	}
 
@@ -1649,7 +1673,7 @@ void DropSecondaryWeapon (player_info &player_info)
 #endif
 			if (secondary_ammo < 4)
 			{
-				HUD_init_message_literal(HM_DEFAULT, "You need at least 4 to drop!");
+				HUD_init_message(HM_DEFAULT, "Cannot drop %s: You need at least 4 to drop, but have only %u!", SECONDARY_WEAPON_NAMES(Secondary_weapon), secondary_ammo);
 				return;
 			}
 			else
@@ -1704,22 +1728,25 @@ void DropSecondaryWeapon (player_info &player_info)
 			break;
 	}
 
-	HUD_init_message(HM_DEFAULT, "%s dropped!",SECONDARY_WEAPON_NAMES(Secondary_weapon));
-#if defined(DXX_BUILD_DESCENT_II)
-	digi_play_sample (SOUND_DROP_WEAPON,F1_0);
-#endif
-
 	seed = d_rand();
 
-	auto objnum = spit_powerup(Vclip, vmobjptr(ConsoleObject), weapon_drop_id, seed);
+	auto objnum = spit_powerup(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, Vclip, *ConsoleObject, weapon_drop_id, seed);
 
+	const auto weapon_name = SECONDARY_WEAPON_NAMES(Secondary_weapon);
 	if (objnum == object_none)
+	{
+		HUD_init_message(HM_DEFAULT, "Failed to drop %s%s!", weapon_name, sub_ammo > 1 ? "s" : "");
 		return;
+	}
+#if defined(DXX_BUILD_DESCENT_II)
+	digi_play_sample(SOUND_DROP_WEAPON, F1_0);
+#endif
 
 	if (Game_mode & GM_MULTI)
 		multi_send_drop_weapon(objnum,seed);
 
 	secondary_ammo -= sub_ammo;
+	HUD_init_message(HM_DEFAULT, "Dropped %s%s, leaving %u on board!", weapon_name, sub_ammo > 1 ? "s" : "", secondary_ammo);
 
 	if (secondary_ammo == 0)
 	{
@@ -1762,8 +1789,6 @@ void do_seismic_stuff(void)
 
 }
 
-DEFINE_BITMAP_SERIAL_UDT();
-
 namespace serial {
 
 template <typename T>
@@ -1792,8 +1817,10 @@ void postprocess_udt(Accessor &, v2_weapon_info &w)
 	w.hires_picture = w.picture;
 }
 
-DEFINE_SERIAL_UDT_TO_MESSAGE(v2_weapon_info, w, (w.render, w.persistent, w.model_num, w.model_num_inner, w.flash_vclip, w.robot_hit_vclip, w.flash_sound, w.wall_hit_vclip, w.fire_count, w.robot_hit_sound, w.ammo_usage, w.weapon_vclip, w.wall_hit_sound, w.destroyable, w.matter, w.bounce, w.homing_flag, w.speedvar, w.flags, w.flash, w.afterburner_size, w.energy_usage, w.fire_wait, w.bitmap, w.blob_size, w.flash_size, w.impact_size, w.strength, w.speed, w.mass, w.drag, w.thrust, w.po_len_to_width_ratio, w.light, w.lifetime, w.damage_radius, w.picture));
-DEFINE_SERIAL_UDT_TO_MESSAGE(weapon_info, w, (w.render, w.persistent, w.model_num, w.model_num_inner, w.flash_vclip, w.robot_hit_vclip, w.flash_sound, w.wall_hit_vclip, w.fire_count, w.robot_hit_sound, w.ammo_usage, w.weapon_vclip, w.wall_hit_sound, w.destroyable, w.matter, w.bounce, w.homing_flag, w.speedvar, w.flags, w.flash, w.afterburner_size, w.children, w.energy_usage, w.fire_wait, w.multi_damage_scale, w.bitmap, w.blob_size, w.flash_size, w.impact_size, w.strength, w.speed, w.mass, w.drag, w.thrust, w.po_len_to_width_ratio, w.light, w.lifetime, w.damage_radius, w.picture, w.hires_picture));
+DEFINE_SERIAL_UDT_TO_MESSAGE(v2_weapon_info, w, (w.render, w.persistent, w.model_num, serial::pad<1>(), w.model_num_inner, serial::pad<1>(), w.flash_vclip, w.robot_hit_vclip, w.flash_sound, w.wall_hit_vclip, w.fire_count, w.robot_hit_sound, w.ammo_usage, w.weapon_vclip, w.wall_hit_sound, w.destroyable, w.matter, w.bounce, w.homing_flag, w.speedvar, w.flags, w.flash, w.afterburner_size, w.energy_usage, w.fire_wait, w.bitmap, w.blob_size, w.flash_size, w.impact_size, w.strength, w.speed, w.mass, w.drag, w.thrust, w.po_len_to_width_ratio, w.light, w.lifetime, w.damage_radius, w.picture));
+DEFINE_SERIAL_UDT_TO_MESSAGE(weapon_info, w, (w.render, w.persistent, w.model_num, serial::pad<1>(), w.model_num_inner, serial::pad<1>(), w.flash_vclip, w.robot_hit_vclip, w.flash_sound, w.wall_hit_vclip, w.fire_count, w.robot_hit_sound, w.ammo_usage, w.weapon_vclip, w.wall_hit_sound, w.destroyable, w.matter, w.bounce, w.homing_flag, w.speedvar, w.flags, w.flash, w.afterburner_size, w.children, w.energy_usage, w.fire_wait, w.multi_damage_scale, w.bitmap, w.blob_size, w.flash_size, w.impact_size, w.strength, w.speed, w.mass, w.drag, w.thrust, w.po_len_to_width_ratio, w.light, w.lifetime, w.damage_radius, w.picture, w.hires_picture));
+ASSERT_SERIAL_UDT_MESSAGE_SIZE(weapon_info, 125);
+ASSERT_SERIAL_UDT_MESSAGE_SIZE(v2_weapon_info, 118);
 #endif
 
 #if 0
@@ -1807,13 +1834,17 @@ void weapon_info_write(PHYSFS_File *fp, const weapon_info &w)
  * reads n weapon_info structs from a PHYSFS_File
  */
 namespace dsx {
-void weapon_info_read_n(weapon_info_array &wi, std::size_t count, PHYSFS_File *fp, int file_version, std::size_t offset)
+
+void weapon_info_read_n(weapon_info_array &wi, std::size_t count, PHYSFS_File *fp,
+#if defined(DXX_BUILD_DESCENT_II)
+						const pig_hamfile_version file_version,
+#endif
+						std::size_t offset)
 {
 	auto r = partial_range(wi, offset, count);
 #if defined(DXX_BUILD_DESCENT_I)
-	(void)file_version;
 #elif defined(DXX_BUILD_DESCENT_II)
-	if (file_version < 3)
+	if (file_version < pig_hamfile_version::_3)
 	{
 		range_for (auto &w, r)
 			PHYSFSX_serialize_read(fp, static_cast<v2_weapon_info &>(w));

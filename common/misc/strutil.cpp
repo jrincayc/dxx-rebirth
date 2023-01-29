@@ -108,16 +108,13 @@ void d_strupr(std::array<char, PATH_MAX> &out, const std::array<char, PATH_MAX> 
 }
 #endif
 
-#ifdef DEBUG_MEMORY_ALLOCATIONS
-char *(d_strdup)(const char *str, const char *var, const char *file, unsigned line)
+std::unique_ptr<char[]> (d_strdup)(const char *str)
 {
-	char *newstr;
-
 	const auto len = strlen(str) + 1;
-	MALLOC<char>(newstr, len, var, file, line);
-	return static_cast<char *>(memcpy(newstr, str, len));
+	std::unique_ptr<char[]> newstr(new char[len]);
+	memcpy(newstr.get(), str, len);
+	return newstr;
 }
-#endif
 
 // remove extension from filename
 void removeext(const char *const filename, std::array<char, 20> &out)
@@ -138,57 +135,39 @@ void removeext(const char *const filename, std::array<char, 20> &out)
 	memcpy(out.data(), filename, copy_len);
 }
 
-
 //give a filename a new extension, won't append if strlen(dest) > 8 chars.
-void change_filename_extension( char *dest, const char *src, const char *ext )
+bool change_filename_extension(const std::span<char> dest, const char *const src, const std::span<const char, 4> ext)
 {
-	char *p;
-	
-	strcpy (dest, src);
-	
-	if (ext[0] == '.')
-		ext++;
-	
-	p = strrchr(dest, '.');
-	if (!p) {
-		if (strlen(dest) > FILENAME_LEN - 5)
-			return;	// a non-opened file is better than a bad memory access
-		
-		p = dest + strlen(dest);
-		*p = '.';
+	const char *const p = strrchr(src, '.');
+	const std::size_t src_dist_to_last_dot = p ? std::distance(src, p) : strlen(src);
+	if (src_dist_to_last_dot + 1 + ext.size() > dest.size())
+	{
+		dest.front() = 0;
+		return false;	// a non-opened file is better than a bad memory access
 	}
-	
-	strcpy(p+1,ext);
+	std::snprintf(dest.data(), dest.size(), "%.*s.%s", static_cast<int>(src_dist_to_last_dot), src, ext.data());
+	return true;
 }
 
-void d_splitpath(const char *name, struct splitpath_t *path)
+splitpath_t d_splitpath(const char *name)
 {
 	const char *s, *p;
 
 	p = name;
 	s = strchr(p, ':');
 	if ( s != NULL ) {
-		path->drive_start = p;
-		path->drive_end = s;
 		p = s+1;
-	} else
-		path->drive_start = path->drive_end = NULL;
+	}
 	s = strrchr(p, '\\');
 	if ( s != NULL) {
-		path->path_start = p;
-		path->path_end = s + 1;
 		p = s+1;
-	} else
-		path->path_start = path->path_end = NULL;
+	}
 
 	s = strchr(p, '.');
-	if ( s != NULL) {
-		path->base_start = p;
-		path->base_end = s;
-		p = s+1;
+	if (s != NULL) {
+		return {p, s};
 	} else
-		path->base_start = path->base_end = NULL;
-	path->ext_start = p;
+		return {};
 }
 
 int string_array_sort_func(const void *v0, const void *v1)

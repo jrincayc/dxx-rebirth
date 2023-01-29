@@ -727,7 +727,7 @@ static void add_missions_to_list(mission_list_type &mission_list, mission_candid
 			break;
 		}
 		*rel_path = 0;	// chop off the entry
-		DXX_POISON_MEMORY(std::next(rel_path), path.end(), 0xcc);
+		DXX_POISON_MEMORY(std::span(std::next(rel_path), path.end()), 0xcc);
 	}
 }
 
@@ -794,7 +794,7 @@ static mission_list_type build_mission_list(const mission_filter_mode mission_fi
 #endif
 	add_d1_builtin_mission_to_list(mission_list);
 	mission_candidate_search_path search_str = {{MISSION_DIR}};
-	DXX_POISON_MEMORY(std::next(search_str.begin(), sizeof(MISSION_DIR)), search_str.end(), 0xcc);
+	DXX_POISON_MEMORY(std::span(std::next(search_str.begin(), sizeof(MISSION_DIR)), search_str.end()), 0xcc);
 	add_missions_to_list(mission_list, search_str, search_str.begin() + sizeof(MISSION_DIR) - 1, mission_filter);
 	
 	// move original missions (in story-chronological order)
@@ -818,9 +818,9 @@ static mission_list_type build_mission_list(const mission_filter_mode mission_fi
 
 int load_mission_ham()
 {
-	read_hamfile(); // intentionally can also read from the HOG
+	read_hamfile(LevelSharedRobotInfoState); // intentionally can also read from the HOG
 
-	if (Piggy_hamfile_version >= 3)
+	if (Piggy_hamfile_version >= pig_hamfile_version::_3)
 	{
 		// re-read sounds in case mission has custom .sXX
 		Num_sound_files = 0;
@@ -865,11 +865,11 @@ int load_mission_ham()
 namespace {
 
 #define tex ".tex"
-static void set_briefing_filename(d_fname &f, const char *const v, std::size_t d)
+static void set_briefing_filename(d_fname &f, const std::span<const char> v)
 {
-	f.copy_if(v, d);
-	f.copy_if(d, tex);
-	if (!PHYSFSX_exists(static_cast<const char *>(f), 1) && !(f.copy_if(++d, "txb"), PHYSFSX_exists(static_cast<const char *>(f), 1))) // check if this file exists ...
+	f.copy_if(v.data(), v.size());
+	f.copy_if(v.size(), tex);
+	if (!PHYSFSX_exists(static_cast<const char *>(f), 1) && !(f.copy_if(v.size() + 1, "txb"), PHYSFSX_exists(static_cast<const char *>(f), 1))) // check if this file exists ...
 		f = {};
 }
 
@@ -879,9 +879,9 @@ static void set_briefing_filename(d_fname &f, const char *const v)
 	auto a = [](char c) {
 		return !c || c == '.';
 	};
-	auto i = std::find_if(v, next(v, f.size() - sizeof(tex)), a);
+	const auto &&i = ranges::find_if(v, next(v, f.size() - sizeof(tex)), a);
 	std::size_t d = std::distance(v, i);
-	set_briefing_filename(f, v, d);
+	set_briefing_filename(f, {v, d});
 }
 
 static void record_briefing(d_fname &f, std::array<char, PATH_MAX> &buf)
@@ -889,11 +889,11 @@ static void record_briefing(d_fname &f, std::array<char, PATH_MAX> &buf)
 	const auto v = get_value(buf.data());
 	if (!v)
 		return;
-	const std::size_t d = std::distance(v, std::find_if(v, buf.end(), null_or_space));
+	const std::size_t d = std::distance(v, ranges::find_if(v, buf.end(), null_or_space));
 	if (d >= FILENAME_LEN)
 		return;
 	{
-		set_briefing_filename(f, v, std::min(d, f.size() - sizeof(tex)));
+		set_briefing_filename(f, {v, std::min(d, f.size() - sizeof(tex))});
 	}
 }
 #undef tex
@@ -1046,8 +1046,8 @@ static const char *load_mission(const mle *const mission)
 					if (!PHYSFSX_fgets(buf, mfile))
 						break;
 					auto &line = buf.line();
-					auto s = std::find_if(line.begin(), line.end(), null_or_space);
-					if (i.copy_if(buf.line(), std::distance(line.begin(), s)))
+					const auto &&s = ranges::find_if(line, null_or_space);
+					if (i.copy_if(line, std::distance(line.begin(), s)))
 					{
 						++level_names_loaded;
 					}
@@ -1092,7 +1092,7 @@ static const char *load_mission(const mle *const mission)
 					auto a = [](char c) {
 						return isspace(static_cast<unsigned>(c));
 					};
-					auto s = std::find_if(lb, t, a);
+					const auto &&s = ranges::find_if(lb, t, a);
 					if (name.copy_if(line, std::distance(lb, s)))
 					{
 						unsigned long ls = strtoul(t + 1, &ip, 10);
@@ -1249,14 +1249,14 @@ struct mission_menu : listbox
 	const unique_menu_tagged_string<menu_title_tag> title;
 	const callback_type when_selected;
 	virtual window_event_result callback_handler(const d_event &, window_event_result) override;
-	mission_menu(const mission_list_type &rml, std::unique_ptr<const char *[]> &&name_pointer_strings, const char *const message, callback_type when_selected, mission_menu *const parent, const int default_item, grs_canvas &canvas) :
-		mission_menu(rml, std::move(name_pointer_strings), prepare_title(message, rml), when_selected, parent, default_item, canvas)
+	mission_menu(const mission_list_type &rml, const std::size_t count_name_pointer_strings, std::unique_ptr<const char *[]> &&name_pointer_strings, const char *const message, callback_type when_selected, mission_menu *const parent, const int default_item, grs_canvas &canvas) :
+		mission_menu(rml, count_name_pointer_strings, std::move(name_pointer_strings), prepare_title(message, rml), when_selected, parent, default_item, canvas)
 	{
 	}
 protected:
 	mission_menu *parent = nullptr;
-	mission_menu(const mission_list_type &rml, std::unique_ptr<const char *[]> &&name_pointer_strings, unique_menu_tagged_string<menu_title_tag> title_parameter, callback_type when_selected, mission_menu *const parent, const int default_item, grs_canvas &canvas) :
-		listbox(default_item, rml.size(), name_pointer_strings.get(), title_parameter, canvas, 1),
+	mission_menu(const mission_list_type &rml, const std::size_t count_name_pointer_strings, std::unique_ptr<const char *[]> &&name_pointer_strings, unique_menu_tagged_string<menu_title_tag> title_parameter, callback_type when_selected, mission_menu *const parent, const int default_item, grs_canvas &canvas) :
+		listbox(default_item, count_name_pointer_strings, name_pointer_strings.get(), title_parameter, canvas, 1),
 		ml(rml), listbox_strings(std::move(name_pointer_strings)),
 		title(std::move(title_parameter)),
 		when_selected(when_selected), parent(parent)
@@ -1290,7 +1290,7 @@ struct toplevel_mission_menu : toplevel_mission_menu_storage, mission_menu
 public:
 	toplevel_mission_menu(mission_list_type &&rml, std::unique_ptr<const char *[]> &&name_pointer_strings, const char *const message, callback_type when_selected, const int default_item, grs_canvas &canvas) :
 		toplevel_mission_menu_storage(std::move(rml)),
-		mission_menu(mission_list_storage, std::move(name_pointer_strings), message, when_selected, nullptr /* no parent for toplevel menu */, default_item, canvas)
+		mission_menu(mission_list_storage, mission_list_storage.size(), std::move(name_pointer_strings), message, when_selected, nullptr /* no parent for toplevel menu */, default_item, canvas)
 	{
 	}
 };
@@ -1345,20 +1345,24 @@ window_event_result mission_menu::callback_handler(const d_event &event, window_
 				auto &mli = ml[citem];
 				if (!mli.directory.empty())
 				{
-					auto listbox_strings = std::make_unique<const char *[]>(mli.directory.size() + 1);
+					/* Increment by 1 to allow the pseudo-entry
+					 * `listbox_go_up`.
+					 */
+					const std::size_t count_name_pointer_strings = mli.directory.size() + 1;
+					auto listbox_strings = std::make_unique<const char *[]>(count_name_pointer_strings);
 					listbox_strings[0] = listbox_go_up;
 					const auto a = [](const mle &m) -> const char * {
 						return m.mission_name;
 					};
 					std::transform(mli.directory.begin(), mli.directory.end(), &listbox_strings[1], a);
-					auto submm = window_create<subdirectory_mission_menu>(mli.directory, std::move(listbox_strings), mli.path.c_str(), when_selected, this, 0, grd_curscreen->sc_canvas);
+					auto submm = window_create<subdirectory_mission_menu>(mli.directory, count_name_pointer_strings, std::move(listbox_strings), mli.path.c_str(), when_selected, this, 0, grd_curscreen->sc_canvas);
 					(void)submm;
 					return window_event_result::handled;
 				}
 				// Chose a mission
 				else if (const auto errstr = load_mission(&mli))
 				{
-					nm_messagebox(menu_title{nullptr}, 1, TXT_OK, "%s\n\n%s\n\n%s", TXT_MISSION_ERROR, errstr, mli.path.c_str());
+					nm_messagebox(menu_title{nullptr}, {TXT_OK}, "%s\n\n%s\n\n%s", TXT_MISSION_ERROR, errstr, mli.path.c_str());
 					return window_event_result::handled;	// stay in listbox so user can select another one
 				}
 				CGameCfg.LastMission.copy_if(listbox_strings[raw_citem]);
@@ -1384,9 +1388,11 @@ window_event_result mission_menu::callback_handler(const d_event &event, window_
 
 namespace {
 
-using mission_menu_create_state_ptr = std::unique_ptr<mission_menu_create_state>;
+/* Reserve an element to allow the pseudo-entry `listbox_go_up`.
+ */
+constexpr std::integral_constant<std::size_t, 1> mission_subdirectory_extra_strings{};
 
-static mission_menu_create_state_ptr prepare_mission_menu_state(const mission_list_type &mission_list, const char *const LastMission, const std::size_t extra_strings)
+static std::unique_ptr<mission_menu_create_state> prepare_mission_menu_state(const mission_list_type &mission_list, const char *const LastMission, const std::size_t extra_strings)
 {
 	auto mission_name_to_select = LastMission;
 	auto p = std::make_unique<mission_menu_create_state>(mission_list.size() + extra_strings);
@@ -1399,11 +1405,25 @@ static mission_menu_create_state_ptr prepare_mission_menu_state(const mission_li
 		const char *const mission_name = mli.mission_name;
 		*listbox_strings++ = mission_name;
 		if (!mission_name_to_select)
+			/* Once the mission to select has been found, copy subsequent
+			 * mission names, but skip all the other logic.  There is no need
+			 * to examine subdirectories, because that examination is only for
+			 * finding the mission to select.
+			 */
 			continue;
 		if (!mli.directory.empty())
 		{
-			auto &&substate = prepare_mission_menu_state(mli.directory, mission_name_to_select, 1);
+			/* If this entry represents a subdirectory, prepare a corresponding
+			 * inner state for it.
+			 */
+			auto &&substate = prepare_mission_menu_state(mli.directory, mission_name_to_select, mission_subdirectory_extra_strings);
 			if (substate->initial_selection == UINT_MAX)
+				/* If the subdirectory did not contain the target mission, then
+				 * discard the subdirectory state.  State is only needed and
+				 * maintained for the directories that must be traversed on the
+				 * path to the target mission, because only those directories
+				 * will be automatically opened in the mission choosing dialog.
+				 */
 				continue;
 			substate->listbox_strings[0] = mission_menu::listbox_go_up;
 			create_state.submenu = std::move(substate);
@@ -1420,17 +1440,16 @@ static mission_menu_create_state_ptr prepare_mission_menu_state(const mission_li
 
 namespace dsx {
 
-int select_mission(const mission_filter_mode mission_filter, const menu_title message, window_event_result (*when_selected)(void))
+void select_mission(const mission_filter_mode mission_filter, const menu_title message, window_event_result (*when_selected)(void))
 {
 	auto &&mission_list = build_mission_list(mission_filter);
-	int new_mission_num;
 
+	if (mission_list.empty())
+		return;
     if (mission_list.size() <= 1)
 	{
-        new_mission_num = !mission_list.empty() && !load_mission(&mission_list.front()) ? 0 : -1;
+        load_mission(&mission_list.front());
 		(*when_selected)();
-		
-		return (new_mission_num >= 0);
     }
 	else
 	{
@@ -1449,15 +1468,14 @@ int select_mission(const mission_filter_mode mission_filter, const menu_title me
 			if (parent_initial_selection >= parent_mission_list_size)
 				break;
 			const auto &substate_mission_list = parent_mission_menu->ml[parent_initial_selection];
-			auto submm = window_create<subdirectory_mission_menu>(substate_mission_list.directory, std::move(substate->listbox_strings), substate_mission_list.path.c_str(), when_selected, parent_mission_menu, 0, grd_curscreen->sc_canvas);
+			auto submm = window_create<subdirectory_mission_menu>(substate_mission_list.directory, substate_mission_list.directory.size() + mission_subdirectory_extra_strings, std::move(substate->listbox_strings), substate_mission_list.path.c_str(), when_selected, parent_mission_menu, 0, grd_curscreen->sc_canvas);
 			parent_mission_menu = submm;
 		}
     }
-
-    return 1;	// presume success
 }
 
 #if DXX_USE_EDITOR
+namespace {
 static int write_mission(void)
 {
 	auto &msn_extension =
@@ -1526,6 +1544,7 @@ static int write_mission(void)
 #endif
 
 	return 1;
+}
 }
 
 void create_new_mission(void)

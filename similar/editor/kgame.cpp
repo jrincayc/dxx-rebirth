@@ -118,7 +118,7 @@ int SaveGameData()
 
 		auto &vcvertptr = Vertices.vcptr;
 		if (Perm_player_segnum!=segment_none) {
-			if (get_seg_masks(vcvertptr, Perm_player_position, vcsegptr(Perm_player_segnum), 0).centermask == 0)
+			if (get_seg_masks(vcvertptr, Perm_player_position, vcsegptr(Perm_player_segnum), 0).centermask == sidemask_t{})
 			{
 				ConsoleObject->pos = Perm_player_position;
 				ConsoleObject->orient = Perm_player_orient;
@@ -135,7 +135,7 @@ int SaveGameData()
 		if (Perm_player_segnum!=segment_none) {
 
 			if (save_segnum > Highest_segment_index)
-				save_segnum = 0;
+				save_segnum = {};
 
 			ConsoleObject->pos = save_pos;
 			const auto &&save_segp = vmsegptridx(save_segnum);

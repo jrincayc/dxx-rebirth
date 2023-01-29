@@ -27,8 +27,10 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 
 #include <physfs.h>
 
+#include "backports-ranges.h"
 #include "fwd-object.h"
 #include "pack.h"
+#include "fwd-robot.h"
 #include "fwd-segment.h"
 #include "fwd-window.h"
 
@@ -66,9 +68,12 @@ void control_center_triggers_write(const control_center_triggers &cct, PHYSFS_Fi
 
 #ifdef dsx
 #include "vecmat.h"
+
+namespace dsx {
+
 struct reactor {
 #if defined(DXX_BUILD_DESCENT_II)
-	int model_num;
+	polygon_model_index model_num;
 #endif
 	int n_guns;
 	/* Location of the gun on the reactor model */
@@ -80,7 +85,6 @@ struct reactor {
 // fills in arrays gun_points & gun_dirs, returns the number of guns read
 void read_model_guns(const char *filename, reactor &);
 
-namespace dsx {
 #if defined(DXX_BUILD_DESCENT_I)
 constexpr std::integral_constant<unsigned, 1> MAX_REACTORS{};
 constexpr std::integral_constant<unsigned, 1> Num_reactors{};
@@ -101,15 +105,15 @@ extern unsigned Num_reactors;
 /*
  * reads n reactor structs from a PHYSFS_File
  */
-void reactor_read_n(PHYSFS_File *fp, partial_range_t<reactor *> r);
+void reactor_read_n(PHYSFS_File *fp, ranges::subrange<reactor *> r);
 #endif
 
 extern std::array<reactor, MAX_REACTORS> Reactors;
 
-static inline int get_reactor_model_number(int id)
+static inline polygon_model_index get_reactor_model_number(const uint8_t id)
 {
 #if defined(DXX_BUILD_DESCENT_I)
-	return id;
+	return polygon_model_index{id};
 #elif defined(DXX_BUILD_DESCENT_II)
 	return Reactors[id].model_num;
 #endif
@@ -125,12 +129,9 @@ static inline reactor &get_reactor_definition(int id)
 #endif
 }
 
-// do whatever this thing does in a frame
-void do_controlcen_frame(vmobjptridx_t obj);
-
 // Initialize control center for a level.
 // Call when a new level is started.
-void init_controlcen_for_level();
+void init_controlcen_for_level(const d_robot_info_array &Robot_info);
 void calc_controlcen_gun_point(object &obj);
 
 void do_controlcen_destroyed_stuff(imobjidx_t objp);

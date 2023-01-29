@@ -61,6 +61,9 @@ enum SyncGLMethod : uint8_t {
 #include "pack.h"
 
 namespace dcx {
+
+enum class sound_sample_rate : uint16_t;
+
 struct CArg : prohibit_void_ptr<CArg>
 {
 	bool CtlNoCursor;
@@ -100,8 +103,10 @@ struct CArg : prohibit_void_ptr<CArg>
 	bool DbgGlGetTexLevelParamOk;
 	bool DbgGlLuminance4Alpha4Ok;
 	bool DbgGlRGBA2Ok;
+#if DXX_USE_STEREOSCOPIC_RENDER
 	bool OglStereo;
 	uint8_t OglStereoView;
+#endif
 	unsigned OglSyncWait;
 #else
 	bool DbgSdlHWSurface;
@@ -113,6 +118,9 @@ struct CArg : prohibit_void_ptr<CArg>
 	bool DbgRenderStats;
 	uint8_t DbgBpp;
 	int8_t DbgVerbose;
+#if DXX_USE_SHAREPATH
+	bool SysNoHogDir;
+#endif
 	bool SysNoNiceFPS;
 	int SysMaxFPS;
 	uint16_t MplUdpHostPort;
@@ -138,9 +146,6 @@ extern CArg CGameArg;
 namespace dsx {
 struct Arg : prohibit_void_ptr<Arg>
 {
-#if DXX_USE_SHAREPATH
-	bool SysNoHogDir;
-#endif
 #ifdef DXX_BUILD_DESCENT_I
 	bool EdiNoBm;
 #endif
@@ -148,7 +153,7 @@ struct Arg : prohibit_void_ptr<Arg>
 	bool SysNoMovies;
 	bool GfxSkipHiresMovie;
 	bool GfxSkipHiresGFX;
-	int SndDigiSampleRate;
+	sound_sample_rate SndDigiSampleRate;
 	std::string EdiAutoLoad;
 	bool EdiSaveHoardData;
 	bool EdiMacData; // also used for some read routines in non-editor build

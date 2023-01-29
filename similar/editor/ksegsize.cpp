@@ -160,18 +160,18 @@ static void med_scale_segment_new(const shared_segment &sp, const int dimension,
 	sidenum_t side0, side1;
 	switch (dimension) {
 		case XDIM:
-			side0 = WLEFT;
-			side1 = WRIGHT;
+			side0 = sidenum_t::WLEFT;
+			side1 = sidenum_t::WRIGHT;
 			vec = &mat.rvec;
 			break;
 		case YDIM:
-			side0 = WBOTTOM;
-			side1 = WTOP;
+			side0 = sidenum_t::WBOTTOM;
+			side1 = sidenum_t::WTOP;
 			vec = &mat.uvec;
 			break;
 		case ZDIM:
-			side0 = WFRONT;
-			side1 = WBACK;
+			side0 = sidenum_t::WFRONT;
+			side1 = sidenum_t::WBACK;
 			vec = &mat.fvec;
 			break;
 		default:
@@ -254,7 +254,7 @@ static int segsize_common(int dimension, fix amount)
 	//	For all segments to which Cursegp is connected, propagate tmap (uv coordinates) from the connected
 	//	segment back to Cursegp.  This will meaningfully propagate uv coordinates to all sides which havve
 	//	an incident edge.  It will also do some sides more than once.  And it is probably just not what you want.
-	std::array<int, MAX_SIDES_PER_SEGMENT> propagated = {};
+	per_side_array<int> propagated{};
 	for (const auto i : MAX_SIDES_PER_SEGMENT)
 	{
 		const auto c = Cursegp->children[i];
@@ -262,7 +262,7 @@ static int segsize_common(int dimension, fix amount)
 		{
 			range_for (auto &s, propagated)
 				++s;
-                        propagated[static_cast<int>(Side_opposite[i])]--;
+			-- propagated[Side_opposite[i]];
 			med_propagate_tmaps_to_segments(vmsegptridx(c), Cursegp, 1);
 		}
 	}

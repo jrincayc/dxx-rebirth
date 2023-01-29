@@ -97,7 +97,7 @@ namespace dcx {
 
 int Endlevel_sequence;
 grs_bitmap *terrain_bitmap;	//!!*exit_bitmap,
-unsigned exit_modelnum, destroyed_exit_modelnum;
+polygon_model_index exit_modelnum, destroyed_exit_modelnum;
 vms_matrix surface_orient;
 
 namespace {
@@ -301,7 +301,7 @@ static sidenum_t find_exit_side(const d_level_shared_segment_state &LevelSharedS
 
 		if (child != segment_none)
 		{
-			auto sidevec = compute_center_point_on_side(vcvertptr, pseg, static_cast<sidenum_t>(i));
+			auto sidevec = compute_center_point_on_side(vcvertptr, pseg, i);
 			vm_vec_normalized_dir_quick(sidevec,sidevec,segcenter);
 			d = vm_vec_dot(sidevec,prefvec);
 
@@ -381,10 +381,9 @@ void draw_stars(grs_canvas &canvas, const d_unique_endlevel_state::starfield_typ
 		g3_rotate_delta_vec(p.p3_vec, si);
 		g3_code_point(p);
 
-		if (p.p3_codes == 0) {
-
-			p.p3_flags &= ~PF_PROJECTED;
-
+		if (p.p3_codes == clipping_code::None)
+		{
+			p.p3_flags &= ~projection_flag::projected;
 			g3_project_point(p);
 #if !DXX_USE_OGL
 			gr_pixel(canvas.cv_bitmap, f2i(p.p3_sx), f2i(p.p3_sy), color);
@@ -403,12 +402,12 @@ void draw_stars(grs_canvas &canvas, const d_unique_endlevel_state::starfield_typ
 //@@
 //@@		g3_add_delta_vec(&top_pnt,&p,&delta);
 //@@
-//@@		if (! (p.p3_codes & CC_BEHIND)) {
+//@@		if (! (p.p3_codes & clipping_code::behind)) {
 //@@			int save_im = Interpolation_method;
 //@@			Interpolation_method = 0;
-//@@			//p.p3_flags &= ~PF_PROJECTED;
+//@@			//p.p3_flags &= ~projection_flag::projected;
 //@@			g3_project_point(&p);
-//@@			if (! (p.p3_flags & PF_OVERFLOW))
+//@@			if (! (p.p3_flags & projection_flag::overflow))
 //@@				//gr_bitmapm(f2i(p.p3_sx)-32,f2i(p.p3_sy)-32,satellite_bitmap);
 //@@				g3_draw_rod_tmap(satellite_bitmap,&p,SATELLITE_WIDTH,&top_pnt,SATELLITE_WIDTH,f1_0);
 //@@			Interpolation_method = save_im;
@@ -498,7 +497,7 @@ static object *external_explosion;
 
 #define FLY_SPEED i2f(50)
 
-static void do_endlevel_flythrough(flythrough_data *flydata);
+static void do_endlevel_flythrough(d_level_unique_object_state &LevelUniqueObjectState, const d_level_shared_segment_state &LevelSharedSegmentState, d_level_unique_segment_state &LevelUniqueSegmentState, flythrough_data *flydata);
 
 #define DEFAULT_SPEED i2f(16)
 
@@ -512,8 +511,6 @@ constexpr std::array<const char, 24> movie_table{{
 	'P','Q','P','Q'
 }};
 static auto endlevel_movie_played = movie_play_status::skipped;
-
-#define MOVIE_REQUIRED 1
 
 //returns movie played status.  see movie.h
 static movie_play_status start_endlevel_movie()
@@ -536,7 +533,7 @@ static movie_play_status start_endlevel_movie()
 
 	save_pal = gr_palette;
 
-	const auto r = PlayMovie(NULL, movie_name,(Game_mode & GM_MULTI)?0:MOVIE_REQUIRED);
+	const auto r = PlayMovie({}, movie_name, (Game_mode & GM_MULTI) ? play_movie_warn_missing::verbose : play_movie_warn_missing::urgent);
 	if (Newdemo_state == ND_STATE_PLAYBACK) {
 		set_screen_mode(SCREEN_GAME);
 		gr_palette = save_pal;
@@ -567,7 +564,8 @@ void draw_exit_model(grs_canvas &canvas)
 
 	auto model_pos = vm_vec_scale_add(mine_exit_point,mine_exit_orient.fvec,i2f(f));
 	vm_vec_scale_add2(model_pos,mine_exit_orient.uvec,i2f(u));
-	draw_polygon_model(canvas, model_pos, mine_exit_orient, nullptr, mine_destroyed ? destroyed_exit_modelnum : exit_modelnum, 0, lrgb, nullptr, nullptr);
+	auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
+	draw_polygon_model(Polygon_models, canvas, model_pos, mine_exit_orient, nullptr, mine_destroyed ? destroyed_exit_modelnum : exit_modelnum, 0, lrgb, nullptr, nullptr);
 }
 
 #define SATELLITE_DIST		i2f(1024)
@@ -609,10 +607,11 @@ static void render_external_scene(fvcobjptridx &vcobjptridx, grs_canvas &canvas,
 
 		g3_add_delta_vec(top_pnt,p,delta);
 
-		if (! (p.p3_codes & CC_BEHIND)) {
-			//p.p3_flags &= ~PF_PROJECTED;
+		if ((p.p3_codes & clipping_code::behind) == clipping_code::None)
+		{
+			//p.p3_flags &= ~projection_flag::projected;
 			//g3_project_point(&p);
-			if (! (p.p3_flags & PF_OVERFLOW)) {
+			if (! (p.p3_flags & projection_flag::overflow)) {
 				push_interpolation_method save_im(0);
 				//gr_bitmapm(f2i(p.p3_sx)-32,f2i(p.p3_sy)-32,satellite_bitmap);
 				g3_draw_rod_tmap(canvas, *satellite_bitmap, p, SATELLITE_WIDTH, top_pnt, SATELLITE_WIDTH, lrgb);
@@ -662,7 +661,9 @@ window_event_result start_endlevel_sequence()
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
 	auto &vmobjptr = Objects.vmptr;
-	reset_rear_view(); //turn off rear view if set - NOTE: make sure this happens before we pause demo recording!!
+	const auto dead = Player_dead_state != player_dead_state::no || (ConsoleObject->flags & OF_SHOULD_BE_DEAD);
+	if (!dead)
+		reset_rear_view(); //turn off rear view if set - NOTE: make sure this happens before we pause demo recording!!
 
 	if (Newdemo_state == ND_STATE_RECORDING)		// stop demo recording
 		Newdemo_state = ND_STATE_PAUSED;
@@ -681,8 +682,7 @@ window_event_result start_endlevel_sequence()
 		return window_event_result::ignored;
 	}
 
-	if (Player_dead_state != player_dead_state::no ||
-		(ConsoleObject->flags & OF_SHOULD_BE_DEAD))
+	if (dead)
 		return window_event_result::ignored;				//don't start if dead!
 	con_puts(CON_NORMAL, "You have escaped the mine!");
 
@@ -693,7 +693,7 @@ window_event_result start_endlevel_sequence()
 	{
 		if (objp->type == OBJ_ROBOT)
 			if (Robot_info[get_robot_id(objp)].companion) {
-				object_create_explosion(vmsegptridx(objp->segnum), objp->pos, F1_0*7/2, VCLIP_POWERUP_DISAPPEARANCE );
+				object_create_explosion_without_damage(Vclip, vmsegptridx(objp->segnum), objp->pos, F1_0 * 7 / 2, VCLIP_POWERUP_DISAPPEARANCE);
 				objp->flags |= OF_SHOULD_BE_DEAD;
 			}
 	}
@@ -722,13 +722,12 @@ window_event_result start_endlevel_sequence()
 	if (!(!(Game_mode & GM_MULTI) && (endlevel_movie_played == movie_play_status::skipped) && endlevel_data_loaded))
 #endif
 	{
-
-		return PlayerFinishedLevel(0);		//done with level
+		return PlayerFinishedLevel(next_level_request_secret_flag::only_normal_level);		//done with level
 	}
 #if defined(DXX_BUILD_DESCENT_II)
 	int exit_models_loaded = 0;
 
-	if (Piggy_hamfile_version < 3)
+	if (Piggy_hamfile_version < pig_hamfile_version::_3)
 		exit_models_loaded = 1; // built-in for PC shareware
 
 	else
@@ -746,7 +745,7 @@ window_event_result start_endlevel_sequence()
 		const auto tunnel_length = get_tunnel_length(vcsegptridx, console_seg, exit_console_side);
 		if (!tunnel_length)
 		{
-				return PlayerFinishedLevel(0);		//don't do special sequence
+			return PlayerFinishedLevel(next_level_request_secret_flag::only_normal_level);		//don't do special sequence
 		}
 		//now pick transition segnum 1/3 of the way in
 
@@ -792,14 +791,14 @@ window_event_result stop_endlevel_sequence()
 	select_cockpit(PlayerCfg.CockpitMode[0]);
 
 	Endlevel_sequence = EL_OFF;
-	return PlayerFinishedLevel(0);
+	return PlayerFinishedLevel(next_level_request_secret_flag::only_normal_level);
 }
 
 #define VCLIP_BIG_PLAYER_EXPLOSION	58
 
 //--unused-- vms_vector upvec = {0,f1_0,0};
 
-window_event_result do_endlevel_frame()
+window_event_result do_endlevel_frame(const d_level_shared_robot_info_state &LevelSharedRobotInfoState)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vmobjptr = Objects.vmptr;
@@ -809,11 +808,11 @@ window_event_result do_endlevel_frame()
 	static fix explosion_wait2=0;
 	static fix ext_expl_halflife;
 
-	auto result = endlevel_move_all_objects();
+	auto result = endlevel_move_all_objects(LevelSharedRobotInfoState);
 
 	if (ext_expl_playing) {
 
-		do_explosion_sequence(vmobjptr(external_explosion));
+		do_explosion_sequence(LevelSharedRobotInfoState.Robot_info, vmobjptr(external_explosion));
 
 		if (external_explosion->lifeleft < ext_expl_halflife)
 			mine_destroyed = 1;
@@ -846,7 +845,7 @@ window_event_result do_endlevel_frame()
 				outside_mine = 1;
 
 				const auto &&exit_segp = vmsegptridx(PlayerUniqueEndlevelState.exit_segnum);
-				const auto &&tobj = object_create_explosion(exit_segp, mine_side_exit_point, i2f(50), VCLIP_BIG_PLAYER_EXPLOSION);
+				const auto &&tobj = object_create_explosion_without_damage(Vclip, exit_segp, mine_side_exit_point, i2f(50), VCLIP_BIG_PLAYER_EXPLOSION);
 
 				if (tobj) {
 				// Move explosion to Viewer to draw it in front of mine exit model
@@ -861,7 +860,7 @@ window_event_result do_endlevel_frame()
 					ext_expl_playing = 1;
 				}
 
-				digi_link_sound_to_pos(SOUND_BIG_ENDLEVEL_EXPLOSION, exit_segp, 0, mine_side_exit_point, 0, i2f(3)/4);
+				digi_link_sound_to_pos(SOUND_BIG_ENDLEVEL_EXPLOSION, exit_segp, sidenum_t::WLEFT, mine_side_exit_point, 0, i2f(3)/4);
 			}
 		}
 
@@ -876,9 +875,9 @@ window_event_result do_endlevel_frame()
 			const auto &&segnum = find_point_seg(LevelSharedSegmentState, LevelUniqueSegmentState, tpnt, Segments.vmptridx(ConsoleObject->segnum));
 
 			if (segnum != segment_none) {
-				object_create_explosion(segnum,tpnt,i2f(20),VCLIP_BIG_PLAYER_EXPLOSION);
+				object_create_explosion_without_damage(Vclip, segnum, tpnt, i2f(20), VCLIP_BIG_PLAYER_EXPLOSION);
 			       	if (d_rand()<10000 || ++sound_count==7) {		//pseudo-random
-					digi_link_sound_to_pos( SOUND_TUNNEL_EXPLOSION, segnum, 0, tpnt, 0, F1_0 );
+					digi_link_sound_to_pos( SOUND_TUNNEL_EXPLOSION, segnum, sidenum_t::WLEFT, tpnt, 0, F1_0 );
 					sound_count=0;
 				}
 			}
@@ -891,7 +890,6 @@ window_event_result do_endlevel_frame()
 	//do little explosions on walls
 	if (Endlevel_sequence >= EL_FLYTHROUGH && Endlevel_sequence < EL_OUTSIDE)
 		if ((explosion_wait2-=FrameTime) < 0) {
-			fvi_query fq;
 			fvi_info hit_data;
 
 			//create little explosion on wall
@@ -907,18 +905,18 @@ window_event_result do_endlevel_frame()
 
 			//find hit point on wall
 
-			fq.p0 = &ConsoleObject->pos;
-			fq.p1 = &tpnt;
-			fq.startseg = ConsoleObject->segnum;
-			fq.rad = 0;
-			fq.thisobjnum = object_first;
-			fq.ignore_obj_list.first = nullptr;
-			fq.flags = 0;
+			const auto hit_type = find_vector_intersection(fvi_query{
+				ConsoleObject->pos,
+				tpnt,
+				fvi_query::unused_ignore_obj_list,
+				fvi_query::unused_LevelUniqueObjectState,
+				fvi_query::unused_Robot_info,
+				0,
+				Objects.icptridx(object_first),
+			}, ConsoleObject->segnum, 0, hit_data);
 
-			find_vector_intersection(fq, hit_data);
-
-			if (hit_data.hit_type==HIT_WALL && hit_data.hit_seg!=segment_none)
-				object_create_explosion(vmsegptridx(hit_data.hit_seg), hit_data.hit_pnt, i2f(3) + d_rand() * 6, VCLIP_SMALL_EXPLOSION);
+			if (hit_type == fvi_hit_type::Wall && hit_data.hit_seg != segment_none)
+				object_create_explosion_without_damage(Vclip, vmsegptridx(hit_data.hit_seg), hit_data.hit_pnt, i2f(3) + d_rand() * 6, VCLIP_SMALL_EXPLOSION);
 
 			explosion_wait2 = (0xa00 + d_rand()/8)/2;
 		}
@@ -929,7 +927,7 @@ window_event_result do_endlevel_frame()
 
 		case EL_FLYTHROUGH: {
 
-			do_endlevel_flythrough(&fly_objects[0]);
+			do_endlevel_flythrough(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, &fly_objects[0]);
 
 			if (ConsoleObject->segnum == PlayerUniqueEndlevelState.transition_segnum)
 			{
@@ -944,7 +942,7 @@ window_event_result do_endlevel_frame()
 
 					Endlevel_sequence = EL_LOOKBACK;
 
-					auto objnum = obj_create(OBJ_CAMERA, 0,
+					const auto &&objnum = obj_create(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, OBJ_CAMERA, 0,
 					                    vmsegptridx(ConsoleObject->segnum), ConsoleObject->pos, &ConsoleObject->orient, 0, 
 					                    object::control_type::None, object::movement_type::None, RT_NONE);
 
@@ -954,7 +952,7 @@ window_event_result do_endlevel_frame()
 
 					Viewer = endlevel_camera = objnum;
 
-					select_cockpit(CM_LETTERBOX);
+					select_cockpit(cockpit_mode_t::letterbox);
 
 					fly_objects[1] = fly_objects[0];
 					fly_objects[1].obj = endlevel_camera;
@@ -974,8 +972,8 @@ window_event_result do_endlevel_frame()
 
 		case EL_LOOKBACK: {
 
-			do_endlevel_flythrough(&fly_objects[0]);
-			do_endlevel_flythrough(&fly_objects[1]);
+			do_endlevel_flythrough(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, &fly_objects[0]);
+			do_endlevel_flythrough(LevelUniqueObjectState, LevelSharedSegmentState, LevelUniqueSegmentState, &fly_objects[1]);
 
 			if (timer>0) {
 
@@ -1188,14 +1186,12 @@ void render_endlevel_frame(grs_canvas &canvas, fix eye_offset)
 
 namespace {
 
-void do_endlevel_flythrough(flythrough_data *flydata)
+void do_endlevel_flythrough(d_level_unique_object_state &LevelUniqueObjectState, const d_level_shared_segment_state &LevelSharedSegmentState, d_level_unique_segment_state &LevelUniqueSegmentState, flythrough_data *const flydata)
 {
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &Vertices = LevelSharedVertexState.get_vertices();
-	auto &vmobjptr = Objects.vmptr;
-	auto &vmobjptridx = Objects.vmptridx;
-	const auto &&obj = vmobjptridx(flydata->obj);
+	const auto &&obj = Objects.vmptridx(flydata->obj);
 	
 	vcsegidx_t old_player_seg = obj->segnum;
 
@@ -1211,7 +1207,7 @@ void do_endlevel_flythrough(flythrough_data *flydata)
 
 	//check new player seg
 
-	update_object_seg(vmobjptr, LevelSharedSegmentState, LevelUniqueSegmentState, obj);
+	update_object_seg(Objects.vmptr, LevelSharedSegmentState, LevelUniqueSegmentState, obj);
 	const shared_segment &pseg = *vcsegptr(obj->segnum);
 
 	if (flydata->first_time || obj->segnum != old_player_seg) {		//moved into new seg
@@ -1223,13 +1219,9 @@ void do_endlevel_flythrough(flythrough_data *flydata)
 
 		//find new exit side
 
-		if (!flydata->first_time) {
-
-			entry_side = matt_find_connect_side(vcsegptr(obj->segnum), old_player_seg);
-			exit_side = Side_opposite[entry_side];
-		}
-
-		if (flydata->first_time || entry_side == side_none || pseg.children[exit_side] == segment_none)
+		if (flydata->first_time ||
+			(entry_side = matt_find_connect_side(vcsegptr(obj->segnum), old_player_seg)) == side_none ||
+			pseg.children[exit_side = Side_opposite[entry_side]] == segment_none)
 			exit_side = find_exit_side(LevelSharedSegmentState, LevelSharedVertexState, LevelUniqueObjectState.last_console_player_position, obj);
 
 		{										//find closest side to align to
@@ -1239,7 +1231,6 @@ void do_endlevel_flythrough(flythrough_data *flydata)
 				d = vm_vec_dot(pseg.sides[i].normals[0], flydata->obj->orient.uvec);
 				if (d > largest_d) {largest_d = d; up_side=i;}
 			}
-
 		}
 
 		//update target point & angles
@@ -1255,29 +1246,21 @@ void do_endlevel_flythrough(flythrough_data *flydata)
 
 		//offset object sideways
 		if (flydata->offset_frac) {
-			int s0=-1,s1=0;
-			fix dist;
-
+			std::array<vms_vector, 2> sp;
+			auto isp = sp.begin();
 			for (const auto i : MAX_SIDES_PER_SEGMENT)
 				if (i!=entry_side && i!=exit_side && i!=up_side && i!=Side_opposite[up_side])
 				 {
-					if (s0==-1)
-						s0 = i;
-					else
-						s1 = i;
+					 compute_center_point_on_side(vcvertptr, *isp, pseg, i);
+					 ++ isp;
+					 if (isp == sp.end())
+						 break;
 				 }
 
-			const auto &&s0p = compute_center_point_on_side(vcvertptr, pseg, s0);
-			const auto &&s1p = compute_center_point_on_side(vcvertptr, pseg, s1);
-			dist = fixmul(vm_vec_dist(s0p,s1p),flydata->offset_frac);
-
-			if (dist-flydata->offset_dist > MAX_SLIDE_PER_SEGMENT)
-				dist = flydata->offset_dist + MAX_SLIDE_PER_SEGMENT;
-
+			const fix dist = std::min(fixmul(vm_vec_dist(sp[0], sp[1]), flydata->offset_frac), flydata->offset_dist + MAX_SLIDE_PER_SEGMENT);
 			flydata->offset_dist = dist;
 
 			vm_vec_scale_add2(dest_point,obj->orient.rvec,dist);
-
 		}
 
 		vm_vec_sub(flydata->step,dest_point,obj->pos);

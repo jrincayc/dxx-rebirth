@@ -40,8 +40,8 @@ namespace dcx {
 struct segmasks
 {
    short facemask;     //which faces sphere pokes through (12 bits)
-   sbyte sidemask;     //which sides sphere pokes through (6 bits)
-   sbyte centermask;   //which sides center point is on back of (6 bits)
+   sidemask_t sidemask;     //which sides sphere pokes through (6 bits)
+   sidemask_t centermask;   //which sides center point is on back of (6 bits)
 };
 
 struct segment_depth_array_t : public std::array<ubyte, MAX_SEGMENTS> {};
@@ -61,8 +61,8 @@ using vertex_vertnum_array_list = std::array<vertex_vertnum_pair, 6>;
 [[nodiscard]]
 sidenum_t find_connect_side(vcsegidx_t base_seg, const shared_segment &con_seg);
 
-void compute_center_point_on_side(fvcvertptr &vcvertptr, vms_vector &vp, const shared_segment &sp, unsigned side);
-static inline vms_vector compute_center_point_on_side(fvcvertptr &vcvertptr, const shared_segment &sp, const unsigned side)
+void compute_center_point_on_side(fvcvertptr &vcvertptr, vms_vector &vp, const shared_segment &sp, sidenum_t side);
+static inline vms_vector compute_center_point_on_side(fvcvertptr &vcvertptr, const shared_segment &sp, const sidenum_t side)
 {
 	vms_vector v;
 	return compute_center_point_on_side(vcvertptr, v, sp, side), v;

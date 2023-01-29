@@ -80,7 +80,7 @@ struct control_info
 #if DXX_MAX_AXES_PER_JOYSTICK
 	struct joystick_axis_values
 	{
-		std::array<fix, JOY_MAX_AXES> joy_axis, raw_joy_axis;
+		std::array<fix, JOY_MAX_AXES> raw_joy_axis;
 	};
 #endif
 	ramp_controls_t<float> down_time; // to scale movement depending on how long the key is pressed
@@ -140,12 +140,16 @@ struct control_info : ::dcx::control_info,
 
 extern control_info Controls;
 
+void kconfig_end_loop(control_info &, const fix frametime);
+
 }
 #endif
 
 #define CONTROL_USING_JOYSTICK	1
 #define CONTROL_USING_MOUSE		2
 #define MOUSEFS_DELTA_RANGE 512
+#define LOCKED_PITCH_FACTOR 2
+#define FREE_PITCH_FACTOR 1
 #ifdef dsx
 namespace dsx {
 #if defined(DXX_BUILD_DESCENT_I)

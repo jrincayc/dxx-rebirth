@@ -8,10 +8,10 @@
 
 #pragma once
 
-#ifdef __cplusplus
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <span>
 #include "dxxsconf.h"
 #include <array>
 
@@ -28,24 +28,32 @@ struct callsign_t
 	{
 		return std::tolower(static_cast<unsigned>(c));
 	}
-	callsign_t &zero_terminate(array_t::iterator i)
+	template <std::size_t Extent>
+		requires(Extent == std::dynamic_extent || Extent <= array_length)
+	void copy(const std::span<const char, Extent> s)
 	{
-		std::fill(i, end(a), 0);
-		return *this;
+		/* Zero the entire array first, so that word-sized moves can be used to
+		 * store the null bytes in bulk.  Then copy an appropriate number of
+		 * characters using byte-sized moves, with a limit to prevent
+		 * overwriting the final null byte even if the input string is too
+		 * long.
+		 */
+		a = {};
+		std::copy_n(s.data(), std::min(a.size() - 1, s.size()), begin(a));
 	}
-	callsign_t &copy(const char *s, std::size_t N)
+	template <std::size_t Extent>
+		requires(Extent == std::dynamic_extent || Extent <= array_length)
+	void copy_lower(const std::span<const char, Extent> sc)
 	{
-		return zero_terminate(std::copy_n(s, std::min(a.size() - 1, N), begin(a)));
-	}
-	callsign_t &copy_lower(const char *s, std::size_t N)
-	{
-		return zero_terminate(std::transform(s, std::next(s, std::min(a.size() - 1, N)), begin(a), lower_predicate));
+		a = {};
+		const auto s = sc.data();
+		std::transform(s, std::next(s, std::min(a.size() - 1, sc.size())), begin(a), lower_predicate);
 	}
 	void lower()
 	{
 		auto ba = begin(a);
-		std::transform(ba, std::prev(end(a)), ba, lower_predicate);
 		a.back() = 0;
+		std::transform(ba, std::prev(end(a)), ba, lower_predicate);
 	}
 	[[nodiscard]]
 	elements_t &buffer()
@@ -53,16 +61,9 @@ struct callsign_t
 		return *reinterpret_cast<elements_t *>(a.data());
 	}
 	template <std::size_t N>
-		callsign_t &operator=(const char (&s)[N])
+		void operator=(const char (&s)[N])
 		{
-			static_assert(N <= array_length, "string too long");
-			return copy(s, N);
-		}
-	template <std::size_t N>
-		void copy_lower(const char (&s)[N])
-		{
-			static_assert(N <= array_length, "string too long");
-			return copy_lower(s, N);
+			copy(std::span(s));
 		}
 	void fill(char c) { a.fill(c); }
 	const char &operator[](std::size_t i) const
@@ -73,15 +74,7 @@ struct callsign_t
 	{
 		return &a[0];
 	};
-	bool operator==(const callsign_t &r) const
-	{
-		return a == r.a;
-	}
-	bool operator!=(const callsign_t &r) const
-	{
-		return !(*this == r);
-	}
+	[[nodiscard]]
+	constexpr bool operator==(const callsign_t &r) const = default;
 };
 static_assert(sizeof(callsign_t) == CALLSIGN_LEN + 1, "callsign_t too big");
-
-#endif

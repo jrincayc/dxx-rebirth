@@ -6,6 +6,7 @@
  */
 #pragma once
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -78,19 +79,23 @@ template <typename T>
 using is_generic_class = typename std::conditional<is_cxx_array<T>::value, std::false_type, std::is_class<T>>::type;
 
 template <typename Accessor, typename A1>
-static inline typename std::enable_if<std::is_integral<typename std::remove_reference<A1>::type>::value, void>::type process_buffer(Accessor &&accessor, A1 &&a1)
+requires(std::is_integral<typename std::remove_reference<A1>::type>::value)
+static inline void process_buffer(Accessor &&accessor, A1 &&a1)
 {
 	process_integer(std::forward<Accessor &&>(accessor), a1);
 }
 
 template <typename Accessor, typename A1, typename A1rr = typename std::remove_reference<A1>::type>
-static inline typename std::enable_if<std::is_enum<A1rr>::value, void>::type process_buffer(Accessor &, A1 &&);
+requires(std::is_enum<A1rr>::value)
+static inline void process_buffer(Accessor &, A1 &&);
 
 template <typename Accessor, typename A1, typename A1rr = typename std::remove_reference<A1>::type>
-static inline typename std::enable_if<is_generic_class<A1rr>::value, void>::type process_buffer(Accessor &, A1 &&);
+requires(is_generic_class<A1rr>::value)
+static inline void process_buffer(Accessor &, A1 &&);
 
 template <typename Accessor, typename A1>
-static typename std::enable_if<is_cxx_array<A1>::value, void>::type process_buffer(Accessor &&, A1 &);
+requires(is_cxx_array<A1>::value)
+static void process_buffer(Accessor &&, A1 &);
 
 template <typename Accessor, typename... Args>
 static void process_buffer(Accessor &, const message<Args...> &);
@@ -100,8 +105,6 @@ class endian_access
 public:
 	/*
 	 * Endian access modes:
-	 * - foreign_endian: assume buffered data is foreign endian
-	 *   Byte swap regardless of host byte order
 	 * - little_endian: assume buffered data is little endian
 	 *   Copy on little endian host, byte swap on big endian host
 	 * - big_endian: assume buffered data is big endian
@@ -109,15 +112,13 @@ public:
 	 * - native_endian: assume buffered data is native endian
 	 *   Copy regardless of host byte order
 	 */
-	typedef std::integral_constant<uint16_t, 0> foreign_endian_type;
-	typedef std::integral_constant<uint16_t, 255> little_endian_type;
-	typedef std::integral_constant<uint16_t, 256> big_endian_type;
-	typedef std::integral_constant<uint16_t, 257> native_endian_type;
-
-	static constexpr auto foreign_endian = foreign_endian_type{};
-	static constexpr auto little_endian = little_endian_type{};
-	static constexpr auto big_endian = big_endian_type{};
-	static constexpr auto native_endian = native_endian_type{};
+	using little_endian_type = std::integral_constant<std::endian, std::endian::little>;
+	using big_endian_type = std::integral_constant<std::endian, std::endian::big>;
+	using native_endian_type = std::integral_constant<std::endian, std::endian::native>;
+	/* If this static_assert fails, then endian_skip_byteswap may return the
+	 * wrong result.
+	 */
+	static_assert(std::endian::little == std::endian::native || std::endian::big == std::endian::native, "host byte order must be little endian or big endian");
 };
 
 	/* Implementation details - avoid namespace pollution */
@@ -130,13 +131,14 @@ using capture_type = typename std::conditional<std::is_lvalue_reference<T>::valu
 		>;
 
 template <typename T, typename Trr = typename std::remove_reference<T>::type>
-static inline auto capture_value(Trr &t) -> decltype(std::ref(t))
+static inline auto capture_value(Trr &t)
 {
 	return std::ref(t);
 }
 
 template <typename T, typename Trr = typename std::remove_reference<T>::type>
-static inline typename std::enable_if<std::is_rvalue_reference<T>::value, std::tuple<Trr>>::type capture_value(Trr &&t)
+requires(std::is_rvalue_reference<T>::value)
+static inline auto capture_value(Trr &&t)
 {
 	return std::tuple<Trr>{std::forward<T>(t)};
 }
@@ -381,19 +383,9 @@ using class_type = message_type<decltype(udt_to_message(std::declval<T>()))>;
 #define ASSERT_SERIAL_UDT_MESSAGE_MUTABLE_TYPE(T, TYPELIST)	\
 	_ASSERT_SERIAL_UDT_MESSAGE_TYPE(T, TYPELIST)
 
-union endian_skip_byteswap_u
+static constexpr uint8_t endian_skip_byteswap(std::endian E)
 {
-	uint8_t c[2];
-	uint16_t s;
-	constexpr endian_skip_byteswap_u(const uint16_t &u) : s(u)
-	{
-		static_assert((offsetof(endian_skip_byteswap_u, c) == offsetof(endian_skip_byteswap_u, s)), "union layout error");
-	}
-};
-
-static inline constexpr uint8_t endian_skip_byteswap(const uint16_t &endian)
-{
-	return endian_skip_byteswap_u{endian}.c[0];
+	return E == std::endian::native;
 }
 
 template <typename T, std::size_t N>
@@ -489,58 +481,53 @@ public:
 template <typename... Args>
 message(Args &&... args) -> message<Args && ...>;
 
-#define SERIAL_DEFINE_SIZE_SPECIFIC_USWAP_BUILTIN(HBITS,BITS)	\
-	static inline constexpr uint##BITS##_t bswap(const uint##BITS##_t &u)	\
-	{	\
-		return __builtin_bswap##BITS(u);	\
-	}
-
-#define SERIAL_DEFINE_SIZE_SPECIFIC_USWAP_EXPLICIT(HBITS,BITS)	\
-	static inline constexpr uint##BITS##_t bswap(const uint##BITS##_t &u)	\
-	{	\
-		return (static_cast<uint##BITS##_t>(bswap(static_cast<uint##HBITS##_t>(u))) << HBITS) |	\
-			static_cast<uint##BITS##_t>(bswap(static_cast<uint##HBITS##_t>(u >> HBITS)));	\
-	}
-
-#define SERIAL_DEFINE_SIZE_SPECIFIC_BSWAP(HBITS,BITS)	\
-	SERIAL_DEFINE_SIZE_SPECIFIC_USWAP(HBITS,BITS);	\
-	static inline constexpr int##BITS##_t bswap(const int##BITS##_t &i) \
-	{	\
-		return bswap(static_cast<uint##BITS##_t>(i));	\
-	}
-
-static inline constexpr uint8_t bswap(const uint8_t &u)
+template <typename T>
+static constexpr T bswap(const T u)
 {
-	return u;
-}
-
-static inline constexpr int8_t bswap(const int8_t &u)
-{
-	return u;
-}
-
-#ifdef DXX_HAVE_BUILTIN_BSWAP16
-#define SERIAL_DEFINE_SIZE_SPECIFIC_USWAP SERIAL_DEFINE_SIZE_SPECIFIC_USWAP_BUILTIN
-#else
-#define SERIAL_DEFINE_SIZE_SPECIFIC_USWAP SERIAL_DEFINE_SIZE_SPECIFIC_USWAP_EXPLICIT
-#endif
-
-SERIAL_DEFINE_SIZE_SPECIFIC_BSWAP(8, 16);
-#undef SERIAL_DEFINE_SIZE_SPECIFIC_USWAP
-
+	if constexpr (std::is_same<T, int8_t>::value || std::is_same<T, uint8_t>::value)
+		/* Swapping a byte-sized value is a no-op.  This is permitted here so
+		 * that callers can swap without checking the size of the value.
+		 */
+		return u;
+	if constexpr (std::is_same<T, int16_t>::value || std::is_same<T, uint16_t>::value)
+	{
 #ifdef DXX_HAVE_BUILTIN_BSWAP
-#define SERIAL_DEFINE_SIZE_SPECIFIC_USWAP SERIAL_DEFINE_SIZE_SPECIFIC_USWAP_BUILTIN
+		return __builtin_bswap16(u);
 #else
-#define SERIAL_DEFINE_SIZE_SPECIFIC_USWAP SERIAL_DEFINE_SIZE_SPECIFIC_USWAP_EXPLICIT
+		return (static_cast<T>(static_cast<uint8_t>(u)) << 8) | static_cast<T>(static_cast<uint8_t>(u >> 8));
 #endif
+	}
+	if constexpr (std::is_same<T, int32_t>::value || std::is_same<T, uint32_t>::value)
+	{
+#ifdef DXX_HAVE_BUILTIN_BSWAP
+		return __builtin_bswap32(u);
+#else
+		return (static_cast<T>(bswap(static_cast<uint16_t>(u))) << 16) | static_cast<T>(bswap(static_cast<uint16_t>(u >> 16)));
+#endif
+	}
+	if constexpr (std::is_same<T, int64_t>::value || std::is_same<T, uint64_t>::value)
+	{
+#ifdef DXX_HAVE_BUILTIN_BSWAP
+		return __builtin_bswap64(u);
+#else
+		return (static_cast<T>(bswap(static_cast<uint32_t>(u))) << 32) | static_cast<T>(bswap(static_cast<uint32_t>(u >> 32)));
+#endif
+	}
+	/* Unsupported type.  Fall off the end of the function and trigger a
+	 * compile error due to the missing `return` statement.
+	 */
+}
 
-SERIAL_DEFINE_SIZE_SPECIFIC_BSWAP(16, 32);
-SERIAL_DEFINE_SIZE_SPECIFIC_BSWAP(32, 64);
+assert_equal(bswap(static_cast<uint8_t>(1)), 1, "");
 
-#undef SERIAL_DEFINE_SIZE_SPECIFIC_BSWAP
-#undef SERIAL_DEFINE_SIZE_SPECIFIC_USWAP
-#undef SERIAL_DEFINE_SIZE_SPECIFIC_USWAP_BUILTIN
-#undef SERIAL_DEFINE_SIZE_SPECIFIC_USWAP_EXPLICIT
+assert_equal(bswap(static_cast<uint16_t>(0x12)), 0x1200, "");
+assert_equal(bswap(static_cast<uint16_t>(0x92)), 0x9200, "");
+assert_equal(bswap(static_cast<uint16_t>(0x9200)), 0x92, "");
+assert_equal(bswap(static_cast<uint16_t>(0x102)), 0x201, "");
+
+assert_equal(bswap(static_cast<uint32_t>(0x102)), 0x2010000, "");
+
+assert_equal(bswap(static_cast<uint64_t>(0x102)), 0x201000000000000ull, "");
 
 namespace reader {
 
@@ -574,7 +561,8 @@ static inline void process_integer(Accessor &buffer, A1 &a1)
 }
 
 template <typename Accessor, typename A, typename T = typename A::value_type>
-static inline typename std::enable_if<sizeof(T) == 1 && std::is_integral<T>::value, void>::type process_array(Accessor &accessor, A &a)
+requires(sizeof(T) == 1 && std::is_integral<T>::value)
+static inline void process_array(Accessor &accessor, A &a)
 {
 	using std::advance;
 	std::copy_n(static_cast<typename Accessor::pointer>(accessor), a.size(), &a[0]);
@@ -625,7 +613,8 @@ static inline void process_integer(Accessor &buffer, const A1 &a1)
 }
 
 template <typename Accessor, typename A, typename T = typename A::value_type>
-static inline typename std::enable_if<sizeof(T) == 1 && std::is_integral<T>::value, void>::type process_array(Accessor &accessor, const A &a)
+requires(sizeof(T) == 1 && std::is_integral<T>::value)
+static inline void process_array(Accessor &accessor, const A &a)
 {
 	using std::advance;
 	std::copy_n(&a[0], a.size(), static_cast<typename Accessor::pointer>(accessor));
@@ -643,7 +632,8 @@ static inline void process_udt(Accessor &&accessor, const detail::sign_extend_ty
 }
 
 template <typename Accessor, typename A1, typename A1rr>
-static inline typename std::enable_if<std::is_enum<A1rr>::value, void>::type process_buffer(Accessor &accessor, A1 &&a1)
+requires(std::is_enum<A1rr>::value)
+static inline void process_buffer(Accessor &accessor, A1 &&a1)
 {
 	using detail::check_enum;
 	process_integer(accessor, a1);
@@ -652,7 +642,8 @@ static inline typename std::enable_if<std::is_enum<A1rr>::value, void>::type pro
 }
 
 template <typename Accessor, typename A1, typename A1rr>
-static inline typename std::enable_if<is_generic_class<A1rr>::value, void>::type process_buffer(Accessor &accessor, A1 &&a1)
+requires(is_generic_class<A1rr>::value)
+static inline void process_buffer(Accessor &accessor, A1 &&a1)
 {
 	using detail::preprocess_udt;
 	using detail::process_udt;
@@ -663,14 +654,16 @@ static inline typename std::enable_if<is_generic_class<A1rr>::value, void>::type
 }
 
 template <typename Accessor, typename A, typename T = typename A::value_type>
-static typename std::enable_if<!(sizeof(T) == 1 && std::is_integral<T>::value), void>::type process_array(Accessor &accessor, A &a)
+requires(!(sizeof(T) == 1 && std::is_integral<T>::value))
+static void process_array(Accessor &accessor, A &a)
 {
 	range_for (auto &i, a)
 		process_buffer(accessor, i);
 }
 
 template <typename Accessor, typename A1>
-static typename std::enable_if<is_cxx_array<A1>::value, void>::type process_buffer(Accessor &&accessor, A1 &a1)
+requires(is_cxx_array<A1>::value)
+static void process_buffer(Accessor &&accessor, A1 &a1)
 {
 	process_array(std::forward<Accessor &&>(accessor), a1);
 }
@@ -689,7 +682,8 @@ static void process_buffer(Accessor &&accessor, const message<Args...> &m)
 
 /* Require at least two arguments to prevent self-selection */
 template <typename Accessor, typename... An>
-static typename std::enable_if<(sizeof...(An) > 1)>::type process_buffer(Accessor &&accessor, An &&... an)
+requires(sizeof...(An) > 1)
+static void process_buffer(Accessor &&accessor, An &&... an)
 {
 	(process_buffer(accessor, std::forward<An>(an)), ...);
 }

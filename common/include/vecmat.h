@@ -25,7 +25,6 @@ COPYRIGHT 1993-1998 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 
 #pragma once
 
-#ifdef __cplusplus
 #include <cassert>
 #include <cstdint>
 #include <utility>
@@ -37,6 +36,7 @@ namespace dcx {
 struct vms_vector
 {
 	fix x, y, z;
+	constexpr bool operator==(const vms_vector &rhs) const = default;
 };
 
 class vm_distance
@@ -132,6 +132,10 @@ public:
 		d2(f2)
 	{
 	}
+	constexpr vm_distance_squared(vm_magnitude_squared m) :
+		d2{static_cast<int64_t>(static_cast<uint64_t>(m))}
+	{
+	}
 	constexpr bool operator<(const vm_distance_squared &rhs) const
 	{
 		return d2 < rhs.d2;
@@ -171,18 +175,19 @@ public:
 	}
 };
 
-class vm_magnitude_squared : public vm_distance_squared
-{
-public:
-	constexpr explicit vm_magnitude_squared(const uint64_t &f2) :
-		vm_distance_squared(static_cast<fix64>(f2))
-	{
-	}
-};
-
 constexpr vm_distance_squared vm_distance::operator*(const vm_distance &rhs) const
 {
 	return vm_distance_squared{static_cast<fix64>(static_cast<fix>(*this)) * static_cast<fix64>(static_cast<fix>(rhs))};
+}
+
+constexpr bool operator<(const vm_magnitude_squared a, const fix &b)
+{
+	return static_cast<uint64_t>(a) < b;
+}
+
+constexpr bool operator<(const vm_magnitude_squared a, const vm_distance_squared b)
+{
+	return static_cast<uint64_t>(a) < static_cast<uint64_t>(b.operator fix64());
 }
 
 #define DEFINE_SERIAL_VMS_VECTOR_TO_MESSAGE()	\
@@ -263,9 +268,9 @@ static inline vms_vector &vm_vec_sub(vms_vector &dest, const vms_vector &src0, c
 {
 #ifdef DXX_CONSTANT_TRUE
 	if (DXX_CONSTANT_TRUE(&src0 == &src1))
-		DXX_ALWAYS_ERROR_FUNCTION(vm_vec_sub_same_op, "vm_vec_sub with &src0 == &src1");
+		DXX_ALWAYS_ERROR_FUNCTION("vm_vec_sub with &src0 == &src1");
 	else if (DXX_CONSTANT_TRUE(src0.x == src1.x && src0.y == src1.y && src0.z == src1.z))
-		DXX_ALWAYS_ERROR_FUNCTION(vm_vec_sub_same_values, "vm_vec_sub with equal value inputs");
+		DXX_ALWAYS_ERROR_FUNCTION("vm_vec_sub with equal value inputs");
 #endif
 	return _vm_vec_sub(dest, src0, src1);
 }
@@ -313,6 +318,13 @@ static inline vms_vector vm_vec_normalized(vms_vector v)
 static inline vms_vector vm_vec_normalized_quick(vms_vector v)
 {
 	return vm_vec_normalize_quick(v), v;
+}
+
+[[nodiscard]]
+static inline std::pair<vm_magnitude, vms_vector> vm_vec_normalize_quick_with_magnitude(vms_vector v)
+{
+	const auto mag = vm_vec_normalize_quick(v);
+	return {mag, v};
 }
 
 [[nodiscard]]
@@ -378,9 +390,9 @@ static inline void vm_matrix_x_matrix(vms_matrix &dest, const vms_matrix &src0, 
 {
 #ifdef DXX_CONSTANT_TRUE
 	if (DXX_CONSTANT_TRUE(&dest == &src0))
-		DXX_ALWAYS_ERROR_FUNCTION(vm_matrix_x_matrix_dest_src0, "vm_matrix_x_matrix with &dest == &src0");
+		DXX_ALWAYS_ERROR_FUNCTION("vm_matrix_x_matrix with &dest == &src0");
 	else if (DXX_CONSTANT_TRUE(&dest == &src1))
-		DXX_ALWAYS_ERROR_FUNCTION(vm_matrix_x_matrix_dest_src1, "vm_matrix_x_matrix with &dest == &src1");
+		DXX_ALWAYS_ERROR_FUNCTION("vm_matrix_x_matrix with &dest == &src1");
 #endif
 	assert(&dest != &src0);
 	assert(&dest != &src1);
@@ -413,5 +425,3 @@ static inline void vm_angvec_make(vms_angvec *v, fixang p, fixang b, fixang h)
 extern const vms_vector vmd_zero_vector;
 
 }
-
-#endif

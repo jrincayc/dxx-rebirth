@@ -9,16 +9,15 @@
 #pragma once
 
 #include <type_traits>
-#include "dxxsconf.h"
 #include "dsx-ns.h"
 #include "objnum.h"
+#include "fwd-piggy.h"
 #include "fwd-vecmat.h"
 #include "fwd-segment.h"
 #include "fwd-window.h"
 #include "fwd-valptridx.h"
+#include "polyobj.h"
 #include <array>
-
-struct bitmap_index;
 
 namespace dcx {
 
@@ -29,6 +28,7 @@ struct d_level_unique_control_center_state;
 
 // Render types
 enum render_type_t : uint8_t;
+enum class gun_num_t : uint8_t;
 
 }
 
@@ -171,13 +171,13 @@ enum class player_dead_state : uint8_t
 namespace dcx {
 extern player_dead_state Player_dead_state;          // !0 means player is dead!
 extern objnum_t Player_fired_laser_this_frame;
-
-// Draw a blob-type object, like a fireball
-void draw_object_blob(grs_canvas &, const object_base &obj, bitmap_index bitmap);
 }
 
 #ifdef dsx
 namespace dsx {
+// Draw a blob-type object, like a fireball
+void draw_object_blob(GameBitmaps_array &GameBitmaps, const object_base &Viewer, grs_canvas &, const object_base &obj, bitmap_index bitmap);
+
 // do whatever setup needs to be done
 void init_objects();
 
@@ -188,9 +188,6 @@ void obj_relink(fvmobjptr &vmobjptr, fvmsegptr &vmsegptr, vmobjptridx_t objnum, 
 // for getting out of messed up linking situations (i.e. caused by demo playback)
 void obj_relink_all();
 
-// links an object into a segment's list of objects.
-// takes object number and segment number
-void obj_link(fvmobjptr &vmobjptr, vmobjptridx_t objnum, vmsegptridx_t segnum);
 /* Link an object without checking whether the object is currently
  * unlinked.  This should be used only in cases where the caller is
  * intentionally overriding the normal linking rules (such as loading
@@ -214,15 +211,11 @@ void reset_objects(d_level_unique_object_state &, unsigned n_objs);
 // make object array non-sparse
 void compress_objects();
 
-// move all objects for the current frame
-window_event_result game_move_all_objects();     // moves all objects
-window_event_result endlevel_move_all_objects();
-
 // set viewer object to next object in array
-void object_goto_next_viewer();
+void object_goto_next_viewer(const object_array &Objects, const object *&viewer);
 
 // make object0 the player, setting all relevant fields
-void init_player_object();
+void init_player_object(const d_level_shared_polygon_model_state &LevelSharedPolygonModelState, object_base &console);
 
 // check if object is in object->segnum.  if not, check the adjacent
 // segs.  if not any of these, returns false, else sets obj->segnum &
@@ -240,13 +233,10 @@ imsegptridx_t find_object_seg(const d_level_shared_segment_state &, d_level_uniq
 // numbers used when debugging is on
 void fix_object_segs();
 
-// Drops objects contained in objp.
-imobjptridx_t object_create_robot_egg(object &objp);
-imobjptridx_t object_create_robot_egg(int type, int id, int num, const vms_vector &init_vel, const vms_vector &pos, vmsegptridx_t segnum);
-
 // Interface to object_create_egg, puts count objects of type type, id
 // = id in objp and then drops them.
-imobjptridx_t call_object_create_egg(const object_base &objp, unsigned count, int id);
+void call_object_create_egg(const object_base &objp, unsigned count, int id);
+imobjptridx_t call_object_create_egg(const object_base &objp, int id);
 
 void dead_player_end();
 
@@ -272,6 +262,7 @@ void clear_transient_objects(int clear_all);
 // Generally, obj_create() should be called to get an object, since it
 // fills in important fields and does the linking.  returns -1 if no
 // free objects
+[[nodiscard]]
 imobjptridx_t obj_allocate(d_level_unique_object_state &);
 
 // after calling init_object(), the network code has grabbed specific
@@ -285,7 +276,6 @@ void special_reset_objects(d_level_unique_object_state &);
 void obj_attach(object_array &Objects, vmobjptridx_t parent, vmobjptridx_t sub);
 
 void create_small_fireball_on_object(vmobjptridx_t objp, fix size_scale, int sound_flag);
-window_event_result dead_player_frame();
 
 #if defined(DXX_BUILD_DESCENT_II)
 extern int Drop_afterburner_blob_flag;		//ugly hack
@@ -301,7 +291,7 @@ void fuelcen_check_for_goal(object &plrobj, const shared_segment &segp);
 imobjptridx_t obj_find_first_of_type(fvmobjptridx &, object_type_t type);
 
 void object_rw_swap(struct object_rw *obj_rw, int swap);
-void reset_player_object();
+void reset_player_object(object_base &);
 
 }
 #endif

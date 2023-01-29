@@ -14,8 +14,10 @@
 #pragma once
 
 #include <cstddef>
+#include <cstring>
 #include <memory>
-#include <string.h>
+#include <ranges>
+#include <span>
 #include <stdarg.h>
 #include <type_traits>
 
@@ -34,7 +36,6 @@
 #include "vecmat.h"
 #include "byteutil.h"
 
-#ifdef __cplusplus
 #include <stdexcept>
 #include "u_mem.h"
 #include "pack.h"
@@ -42,22 +43,22 @@
 #include "fwd-partial_range.h"
 #include <array>
 #include <memory>
+#include "backports-ranges.h"
 
 #ifdef DXX_CONSTANT_TRUE
-#define _DXX_PHYSFS_CHECK_SIZE_CONSTANT(S,v)	DXX_CONSTANT_TRUE((S) > (v))
-#define _DXX_PHYSFS_CHECK_SIZE(S,C,v)	_DXX_PHYSFS_CHECK_SIZE_CONSTANT(static_cast<size_t>(S) * static_cast<size_t>(C), v)
+#define _DXX_PHYSFS_CHECK_SIZE(S,C,v)	DXX_CONSTANT_TRUE((std::size_t{S} * std::size_t{C}) > (v))
 #define DXX_PHYSFS_CHECK_READ_SIZE_OBJECT_SIZE(S,C,v)	\
-	(void)(__builtin_object_size(v, 1) != static_cast<size_t>(-1) && _DXX_PHYSFS_CHECK_SIZE(S,C,__builtin_object_size(v, 1)) && (DXX_ALWAYS_ERROR_FUNCTION(dxx_trap_overwrite, "read size exceeds element size"), 0))
+	(void)(__builtin_object_size(v, 1) != static_cast<size_t>(-1) && _DXX_PHYSFS_CHECK_SIZE(S,C,__builtin_object_size(v, 1)) && (DXX_ALWAYS_ERROR_FUNCTION("read size exceeds element size"), 0))
 #define DXX_PHYSFS_CHECK_READ_SIZE_ARRAY_SIZE(S,C)	\
-	(void)(_DXX_PHYSFS_CHECK_SIZE(S,C,sizeof(v)) && (DXX_ALWAYS_ERROR_FUNCTION(dxx_trap_overwrite, "read size exceeds array size"), 0))
+	(void)(_DXX_PHYSFS_CHECK_SIZE(S,C,sizeof(v)) && (DXX_ALWAYS_ERROR_FUNCTION("read size exceeds array size"), 0))
 #define DXX_PHYSFS_CHECK_WRITE_SIZE_OBJECT_SIZE(S,C,v)	\
-	(void)(__builtin_object_size(v, 1) != static_cast<size_t>(-1) && _DXX_PHYSFS_CHECK_SIZE(S,C,__builtin_object_size(v, 1)) && (DXX_ALWAYS_ERROR_FUNCTION(dxx_trap_overwrite, "write size exceeds element size"), 0))
+	(void)(__builtin_object_size(v, 1) != static_cast<size_t>(-1) && _DXX_PHYSFS_CHECK_SIZE(S,C,__builtin_object_size(v, 1)) && (DXX_ALWAYS_ERROR_FUNCTION("write size exceeds element size"), 0))
 #define DXX_PHYSFS_CHECK_WRITE_ELEMENT_SIZE_CONSTANT(S,C)	\
 	((void)(dxx_builtin_constant_p(S) || dxx_builtin_constant_p(C) || \
-		(DXX_ALWAYS_ERROR_FUNCTION(dxx_trap_nonconstant_size, "array element size is not constant"), 0)))
+		(DXX_ALWAYS_ERROR_FUNCTION("array element size is not constant"), 0)))
 #define DXX_PHYSFS_CHECK_WRITE_SIZE_ARRAY_SIZE(S,C)	\
 	((void)(_DXX_PHYSFS_CHECK_SIZE(S,C,sizeof(v)) && \
-		(DXX_ALWAYS_ERROR_FUNCTION(dxx_trap_overread, "write size exceeds array size"), 0)))
+		(DXX_ALWAYS_ERROR_FUNCTION("write size exceeds array size"), 0)))
 #else
 #define DXX_PHYSFS_CHECK_READ_SIZE_OBJECT_SIZE(S,C,v)	((void)0)
 #define DXX_PHYSFS_CHECK_READ_SIZE_ARRAY_SIZE(S,C)	((void)0)
@@ -76,10 +77,7 @@ template <typename V>
 __attribute_always_inline()
 static inline PHYSFS_sint64 PHYSFSX_check_read(PHYSFS_File *file, V *v, const PHYSFS_uint32 S, const PHYSFS_uint32 C)
 {
-	if constexpr (std::is_integral<V>::value)
-		static_assert(std::is_pod<V>::value, "non-POD integral value read");
-	else
-		static_assert(std::is_pod<V>::value, "non-POD non-integral value read");
+	static_assert(std::is_standard_layout<V>::value && std::is_trivial<V>::value, "non-POD value read");
 	DXX_PHYSFS_CHECK_READ_SIZE_OBJECT_SIZE(S, C, v);
 	return PHYSFS_read(file, v, S, C);
 }
@@ -88,7 +86,7 @@ template <typename V, std::size_t N>
 __attribute_always_inline()
 static inline PHYSFS_sint64 PHYSFSX_check_read(PHYSFS_File *file, std::array<V, N> &v, PHYSFS_uint32 S, PHYSFS_uint32 C)
 {
-	static_assert(std::is_pod<V>::value, "C++ array of non-POD elements read");
+	static_assert(std::is_standard_layout<V>::value && std::is_trivial<V>::value, "C++ array of non-POD elements read");
 	DXX_PHYSFS_CHECK_READ_SIZE_ARRAY_SIZE(S, C);
 	return PHYSFSX_check_read(file, &v[0], S, C);
 }
@@ -104,13 +102,9 @@ template <typename V>
 __attribute_always_inline()
 static inline PHYSFS_sint64 PHYSFSX_check_write(PHYSFS_File *file, const V *v, const PHYSFS_uint32 S, const PHYSFS_uint32 C)
 {
+	static_assert(std::is_standard_layout<V>::value && std::is_trivial<V>::value, "non-POD value written");
 	if constexpr (std::is_integral<V>::value)
-	{
-		static_assert(std::is_pod<V>::value, "non-POD integral value written");
 		DXX_PHYSFS_CHECK_WRITE_ELEMENT_SIZE_CONSTANT(S,C);
-	}
-	else
-		static_assert(std::is_pod<V>::value, "non-POD non-integral value written");
 	DXX_PHYSFS_CHECK_WRITE_SIZE_OBJECT_SIZE(S, C, v);
 	return PHYSFS_write(file, v, S, C);
 }
@@ -119,7 +113,7 @@ template <typename V, std::size_t N>
 __attribute_always_inline()
 static inline PHYSFS_sint64 PHYSFSX_check_write(PHYSFS_File *file, const std::array<V, N> &v, PHYSFS_uint32 S, PHYSFS_uint32 C)
 {
-	static_assert(std::is_pod<V>::value, "C++ array of non-POD elements written");
+	static_assert(std::is_standard_layout<V>::value && std::is_trivial<V>::value, "C++ array of non-POD elements written");
 	DXX_PHYSFS_CHECK_WRITE_CONSTANTS(S,C);
 	return PHYSFSX_check_write(file, &v[0], S, C);
 }
@@ -171,20 +165,15 @@ static inline int PHYSFSX_writeString(PHYSFS_File *file, const char *s)
 	return PHYSFS_write(file, s, 1, strlen(s) + 1);
 }
 
-static inline int PHYSFSX_puts(PHYSFS_File *file, const char *s, size_t len) __attribute_nonnull();
-static inline int PHYSFSX_puts(PHYSFS_File *file, const char *s, size_t len)
+static inline auto PHYSFSX_puts(PHYSFS_File *file, const std::span<const char> s)
 {
-	return PHYSFS_write(file, s, 1, len);
+	return PHYSFS_write(file, s.data(), 1, s.size());
 }
 
-template <size_t len>
-static inline int PHYSFSX_puts_literal(PHYSFS_File *file, const char (&s)[len]) __attribute_nonnull();
-template <size_t len>
-static inline int PHYSFSX_puts_literal(PHYSFS_File *file, const char (&s)[len])
+static inline auto PHYSFSX_puts_literal(PHYSFS_File *file, const std::span<const char> s)
 {
-	return PHYSFSX_puts(file, s, len - 1);
+	return PHYSFS_write(file, s.data(), 1, s.size() - 1);
 }
-#define PHYSFSX_puts(A1,S,...)	(PHYSFSX_puts(A1,S, _dxx_call_puts_parameter2(1, ## __VA_ARGS__, strlen(S))))
 
 static inline int PHYSFSX_fgetc(PHYSFS_File *const fp)
 {
@@ -232,7 +221,7 @@ struct PHYSFSX_gets_line_t
 	std::unique_ptr<line_t> m_line;
 	const line_t &line() const { return *m_line.get(); }
 	line_t &line() { return *m_line.get(); }
-	line_t &next()
+	std::span<char, N> next()
 	{
 		m_line = std::make_unique<line_t>();
 		return *m_line.get();
@@ -241,7 +230,7 @@ struct PHYSFSX_gets_line_t
 	line_t m_line;
 	const line_t &line() const { return m_line; }
 	line_t &line() { return m_line; }
-	line_t &next() { return m_line; }
+	std::span<char, N> next() { return m_line; }
 #endif
 	operator line_t &() { return line(); }
 	operator const line_t &() const { return line(); }
@@ -260,9 +249,12 @@ template <>
 struct PHYSFSX_gets_line_t<0>
 {
 #define DXX_ALLOCATE_PHYSFS_LINE(n)	std::make_unique<char[]>(n)
+#if !DXX_HAVE_POISON
+	const
+#endif
 	std::unique_ptr<char[]> m_line;
-	std::size_t m_length;
-	PHYSFSX_gets_line_t(std::size_t n) :
+	const std::size_t m_length;
+	PHYSFSX_gets_line_t(const std::size_t n) :
 #if !DXX_HAVE_POISON
 		m_line(DXX_ALLOCATE_PHYSFS_LINE(n)),
 #endif
@@ -271,13 +263,13 @@ struct PHYSFSX_gets_line_t<0>
 	}
 	char *line() { return m_line.get(); }
 	const char *line() const { return m_line.get(); }
-	char *next()
+	std::span<char> next()
 	{
 #if DXX_HAVE_POISON
 		/* Reallocate to tell checker to undefine the buffer */
 		m_line = DXX_ALLOCATE_PHYSFS_LINE(m_length);
 #endif
-		return m_line.get();
+		return std::span<char>(m_line.get(), m_length);
 	}
 	std::size_t size() const { return m_length; }
 	operator const char *() const { return m_line.get(); }
@@ -289,25 +281,30 @@ struct PHYSFSX_gets_line_t<0>
 
 class PHYSFSX_fgets_t
 {
-	static char *get(char *buf, std::size_t n, PHYSFS_File *const fp);
-	static char *get(char *buf, std::size_t offset, std::size_t n, PHYSFS_File *const fp)
+	[[nodiscard]]
+	static char *get(std::span<char> buf, PHYSFS_File *const fp);
+	template <std::size_t Extent>
+		[[nodiscard]]
+		static char *get(const std::span<char, Extent> buf, std::size_t offset, PHYSFS_File *const fp)
 	{
-		if (offset > n)
+		if (offset > buf.size())
 			throw std::invalid_argument("offset too large");
-		return get(&buf[offset], n - offset, fp);
+		return get(buf.subspan(offset), fp);
 	}
 public:
 	template <std::size_t n>
+		[[nodiscard]]
 		__attribute_nonnull()
 		char *operator()(PHYSFSX_gets_line_t<n> &buf, PHYSFS_File *const fp, std::size_t offset = 0) const
 		{
-			return get(&buf.next()[0], offset, buf.size(), fp);
+			return get(buf.next(), offset, fp);
 		}
 	template <std::size_t n>
+		[[nodiscard]]
 		__attribute_nonnull()
 		char *operator()(ntstring<n> &buf, PHYSFS_File *const fp, std::size_t offset = 0) const
 		{
-			auto r = get(&buf.data()[0], offset, buf.size(), fp);
+			auto r = get(std::span(buf), offset, fp);
 			buf.back() = 0;
 			return r;
 		}
@@ -315,18 +312,19 @@ public:
 
 constexpr PHYSFSX_fgets_t PHYSFSX_fgets{};
 
-static inline int PHYSFSX_printf(PHYSFS_File *file, const char *format, ...) __attribute_format_printf(2, 3);
+int PHYSFSX_printf(PHYSFS_File *file, const char *format) = delete;
+
+__attribute_format_printf(2, 3)
 static inline int PHYSFSX_printf(PHYSFS_File *file, const char *format, ...)
-#define PHYSFSX_printf(A1,F,...)	dxx_call_printf_checked(PHYSFSX_printf,PHYSFSX_puts_literal,(A1),(F),##__VA_ARGS__)
 {
 	char buffer[1024];
 	va_list args;
 
 	va_start(args, format);
-	size_t len = vsnprintf(buffer, sizeof(buffer), format, args);
+	const std::size_t len = std::max(vsnprintf(buffer, sizeof(buffer), format, args), 0);
 	va_end(args);
 
-	return PHYSFSX_puts(file, buffer, len);
+	return PHYSFSX_puts(file, {buffer, len});
 }
 
 #define PHYSFSX_writeFix	PHYSFS_writeSLE32
@@ -346,8 +344,14 @@ static inline int PHYSFSX_writeVector(PHYSFS_File *file, const vms_vector &v)
 __attribute_cold
 void PHYSFSX_read_helper_report_error(const char *const filename, const unsigned line, const char *const func, PHYSFS_File *const file);
 
-template <typename T, int (*F)(PHYSFS_File *, T *)>
-static T PHYSFSX_read_helper(const char *const filename, const unsigned line, const char *const func, PHYSFS_File *const file)
+template <typename T, auto F>
+struct PHYSFSX_read_helper
+{
+	T operator()(PHYSFS_File *file, const char *filename = __builtin_FILE(), unsigned line = __builtin_LINE(), const char *func = __builtin_FUNCTION()) const;
+};
+
+template <typename T, auto F>
+T PHYSFSX_read_helper<T, F>::operator()(PHYSFS_File *const file, const char *const filename, const unsigned line, const char *const func) const
 {
 	T i;
 	if (!F(file, &i))
@@ -369,11 +373,11 @@ static inline int PHYSFSX_readS8(PHYSFS_File *const file, int8_t *const b)
 	return (PHYSFS_read(file, b, sizeof(*b), 1) == 1);
 }
 
-#define PHYSFSX_readByte(F)	(PHYSFSX_read_helper<int8_t, PHYSFSX_readS8>(__FILE__, __LINE__, __func__, (F)))
-#define PHYSFSX_readShort(F)	(PHYSFSX_read_helper<int16_t, PHYSFS_readSLE16>(__FILE__, __LINE__, __func__, (F)))
-#define PHYSFSX_readInt(F)	(PHYSFSX_read_helper<int32_t, PHYSFS_readSLE32>(__FILE__, __LINE__, __func__, (F)))
-#define PHYSFSX_readFix(F)	(PHYSFSX_read_helper<fix, PHYSFS_readSLE32>(__FILE__, __LINE__, __func__, (F)))
-#define PHYSFSX_readFixAng(F)	(PHYSFSX_read_helper<fixang, PHYSFS_readSLE16>(__FILE__, __LINE__, __func__, (F)))
+static constexpr PHYSFSX_read_helper<int8_t, PHYSFSX_readS8> PHYSFSX_readByte{};
+static constexpr PHYSFSX_read_helper<int16_t, PHYSFS_readSLE16> PHYSFSX_readShort{};
+static constexpr PHYSFSX_read_helper<int32_t, PHYSFS_readSLE32> PHYSFSX_readInt{};
+static constexpr PHYSFSX_read_helper<fix, PHYSFS_readSLE32> PHYSFSX_readFix{};
+static constexpr PHYSFSX_read_helper<fixang, PHYSFS_readSLE16> PHYSFSX_readFixAng{};
 #define PHYSFSX_readVector(F,V)	(PHYSFSX_read_sequence_helper<fix, PHYSFS_readSLE32, vms_vector, &vms_vector::x, &vms_vector::y, &vms_vector::z>(__FILE__, __LINE__, __func__, (F), &(V)))
 #define PHYSFSX_readAngleVec(V,F)	(PHYSFSX_read_sequence_helper<fixang, PHYSFS_readSLE16, vms_angvec, &vms_angvec::p, &vms_angvec::b, &vms_angvec::h>(__FILE__, __LINE__, __func__, (F), (V)))
 
@@ -425,15 +429,7 @@ typedef char file_extension_t[5];
 
 [[nodiscard]]
 __attribute_nonnull()
-int PHYSFSX_checkMatchingExtension(const char *filename, const partial_range_t<const file_extension_t *>);
-
-template <std::size_t count>
-[[nodiscard]]
-__attribute_nonnull()
-static inline int PHYSFSX_checkMatchingExtension(const std::array<file_extension_t, count> &exts, const char *filename)
-{
-	return PHYSFSX_checkMatchingExtension(filename, exts);
-}
+int PHYSFSX_checkMatchingExtension(const char *filename, const ranges::subrange<const file_extension_t *> range);
 
 enum class physfs_search_path : int
 {
@@ -445,6 +441,7 @@ PHYSFS_ErrorCode PHYSFSX_addRelToSearchPath(const char *relname, std::array<char
 void PHYSFSX_removeRelFromSearchPath(const char *relname);
 extern int PHYSFSX_fsize(const char *hogname);
 extern void PHYSFSX_listSearchPathContent();
+[[nodiscard]]
 int PHYSFSX_getRealPath(const char *stdPath, std::array<char, PATH_MAX> &realPath);
 
 class PHYSFS_unowned_storage_mount_deleter
@@ -509,6 +506,4 @@ RAIIPHYSFS_ComputedPathMount make_PHYSFSX_ComputedPathMount(const char *const na
 #endif
 
 }
-#endif
-
 #endif

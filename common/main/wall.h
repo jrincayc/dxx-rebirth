@@ -83,11 +83,6 @@ struct WALL_IS_DOORWAY_result_t
 		return value & m.value;
 	}
 	bool operator==(WALL_IS_DOORWAY_result_t) const = delete;
-	template <typename T>
-		bool operator!=(const T &t) const
-		{
-			return !(*this == t);
-		}
 };
 
 struct stuckobj : public prohibit_void_ptr<stuckobj>
@@ -141,9 +136,9 @@ enum class wall_flag : uint8_t
 	door_auto = 1u << 4,	// Door automatically closes after time.
 	illusion_off = 1u << 5,	// Illusionary wall is shut off.
 	exploding = 1u << 6,
-#if defined(DXX_BUILD_DESCENT_II)
+	/* if DXX_BUILD_DESCENT_II */
 	buddy_proof = 1u << 7,	// Buddy assumes he cannot get through this wall.
-#endif
+	/* endif */
 };
 
 enum class wall_flags : uint8_t;

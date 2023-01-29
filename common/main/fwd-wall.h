@@ -11,7 +11,6 @@
 #include <type_traits>
 #include <physfs.h>
 #include "piggy.h"
-#include "maths.h"
 #include "textures.h"
 #include "fwd-object.h"
 #include "fwd-segment.h"
@@ -48,6 +47,8 @@ enum wall_type_t : uint8_t
 	WALL_CLOAKED = 7,   // Can see it, and see through it
 #endif
 };
+
+struct d_level_unique_wall_subsystem_state;
 }
 
 namespace dcx {
@@ -128,7 +129,6 @@ constexpr std::integral_constant<wall_clip_flag_t, 4> WCF_TMAP1{};       //this 
 constexpr std::integral_constant<wall_clip_flag_t, 8> WCF_HIDDEN{};       //this uses primary tmap, not tmap2
 }
 
-#ifdef dsx
 namespace dsx {
 struct wall;
 struct wclip;
@@ -158,31 +158,18 @@ namespace dcx {
 DXX_VALPTRIDX_DEFINE_SUBTYPE_TYPEDEFS(active_door, actdoor);
 extern unsigned Num_wall_anims;
 }
-#endif
-
-#if DXX_USE_EDITOR
-#ifdef dsx
 namespace dsx {
-void wall_init();
-}
-#endif
-#endif
 
-#if defined(DXX_BUILD_DESCENT_I) || defined(DXX_BUILD_DESCENT_II)
 // Automatically checks if a there is a doorway (i.e. can fly through)
-#ifdef dsx
-namespace dsx {
 WALL_IS_DOORWAY_result_t WALL_IS_DOORWAY(const GameBitmaps_array &GameBitmaps, const Textures_array &Textures, fvcwallptr &vcwallptr, cscusegment seg, sidenum_t side);
 
 // Deteriorate appearance of wall. (Changes bitmap (paste-ons))
 }
-#endif
 void wall_damage(vmsegptridx_t seg, sidenum_t side, fix damage);
 
 // Destroys a blastable wall. (So it is an opening afterwards)
 void wall_destroy(vmsegptridx_t seg, sidenum_t side);
 
-#ifdef dsx
 namespace dsx {
 
 void wall_illusion_on(fvmwallptr &, vcsegptridx_t seg, sidenum_t side);
@@ -197,7 +184,6 @@ void wall_open_door(vmsegptridx_t seg, sidenum_t side);
 void wall_close_door(wall_array &Walls, vmsegptridx_t seg, sidenum_t side);
 #endif
 }
-#endif
 
 //return codes for wall_hit_process()
 enum class wall_hit_process_t : unsigned
@@ -210,16 +196,16 @@ enum class wall_hit_process_t : unsigned
 
 // Determines what happens when a wall is shot
 //obj is the object that hit...either a weapon or the player himself
-#ifdef dsx
 class player_flags;
 namespace dsx {
+void wall_init(d_level_unique_wall_subsystem_state &LevelUniqueWallSubsystemState);
 wall_hit_process_t wall_hit_process(player_flags, vmsegptridx_t seg, sidenum_t side, fix damage, unsigned playernum, const object &obj);
 
 // Opens/destroys specified door.
 void wall_toggle(fvmwallptr &vmwallptr, vmsegptridx_t segnum, sidenum_t side);
 
 // Called once per frame..
-void wall_frame_process();
+void wall_frame_process(const d_robot_info_array &Robot_info);
 
 //set the tmap_num or tmap_num2 field for a wall/door
 void wall_set_tmap_num(const wclip &, vmsegptridx_t seg, sidenum_t side, vmsegptridx_t csegp, sidenum_t cside, unsigned frame_num);
@@ -229,7 +215,6 @@ void wall_write(PHYSFS_File *fp, const wall &w, short version);
 
 void wall_close_door_ref(fvmsegptridx &vmsegptridx, wall_array &Walls, const wall_animations_array &WallAnims, active_door &);
 }
-#endif
 
 #if defined(DXX_BUILD_DESCENT_II)
 //start wall open <-> closed transitions
@@ -241,7 +226,6 @@ void cloaking_wall_read(cloaking_wall &cw, PHYSFS_File *fp);
 void cloaking_wall_write(const cloaking_wall &cw, PHYSFS_File *fp);
 void blast_nearby_glass(const object &objp, fix damage);
 }
-#endif
 #endif
 
 void v16_wall_read(PHYSFS_File *fp, v16_wall &w);

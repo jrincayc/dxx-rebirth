@@ -118,10 +118,6 @@ union weapon_index
 		secondary(s)
 	{
 	}
-	constexpr bool operator!=(const weapon_index w) const
-	{
-		return primary != w.primary;
-	}
 	constexpr bool operator==(const weapon_index w) const
 	{
 		return primary == w.primary;
@@ -255,7 +251,7 @@ union weapon_index
 #define SB_SECONDARY_W_BOX_RIGHT_L	(SB_SECONDARY_W_BOX_LEFT_L+54)
 #define SB_SECONDARY_W_BOX_BOT_L	(153+42)
 #define SB_SECONDARY_AMMO_X		(SB_SECONDARY_W_BOX_LEFT + (multires_gauge_graphic.get(14, 11)))	//(212+9)
-#define GET_GAUGE_INDEX(x)		(Gauges[x].index)
+#define GET_GAUGE_INDEX(x)		(Gauges[x])
 
 #elif defined(DXX_BUILD_DESCENT_II)
 #define AFTERBURNER_GAUGE_X_L	45-1
@@ -299,7 +295,7 @@ union weapon_index
 #define SB_SECONDARY_W_BOX_RIGHT_L	(SB_SECONDARY_W_BOX_LEFT_L+54+1)
 #define SB_SECONDARY_W_BOX_BOT_L	(SB_SECONDARY_W_BOX_TOP_L+43)
 #define SB_SECONDARY_AMMO_X		(SB_SECONDARY_W_BOX_LEFT + (multires_gauge_graphic.get(14 - 4, 11)))	//(212+9)
-#define GET_GAUGE_INDEX(x)		((multires_gauge_graphic.rget(Gauges_hires, Gauges)[x].index))
+#define GET_GAUGE_INDEX(x)		((multires_gauge_graphic.rget(Gauges_hires, Gauges)[x]))
 
 #endif
 
@@ -545,6 +541,7 @@ std::array<bitmap_index, MAX_GAUGE_BMS> Gauges,   // Array of all gauge bitmaps.
 #endif
 
 namespace dsx {
+namespace {
 static inline void PAGE_IN_GAUGE(int x, const local_multires_gauge_graphic multires_gauge_graphic)
 {
 	const auto &g =
@@ -555,11 +552,14 @@ static inline void PAGE_IN_GAUGE(int x, const local_multires_gauge_graphic multi
 	PIGGY_PAGE_IN(g[x]);
 }
 }
+}
 
+namespace {
 static int score_display;
 static fix score_time;
 static laser_level old_laser_level;
 static int invulnerable_frame;
+}
 int	Color_0_31_0 = -1;
 
 namespace dcx {
@@ -1013,7 +1013,7 @@ static void hud_show_score_added(grs_canvas &canvas, const game_mode_flags Game_
 		gr_set_fontcolor(canvas, BM_XRGB(0, color, 0), -1);
 		auto &game_font = *GAME_FONT;
 		const auto &&[w, h] = gr_get_string_size(game_font, score_str);
-		gr_string(canvas, game_font, canvas.cv_bitmap.bm_w - w - FSPACX(PlayerCfg.CockpitMode[1] == CM_FULL_SCREEN ? 1 : 12), LINE_SPACING(game_font, game_font) + FSPACY(1), score_str, w, h);
+		gr_string(canvas, game_font, canvas.cv_bitmap.bm_w - w - FSPACX(PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen ? 1 : 12), LINE_SPACING(game_font, game_font) + FSPACY(1), score_str, w, h);
 	} else {
 		score_time = 0;
 		score_display = 0;
@@ -1162,7 +1162,7 @@ static void hud_show_keys(const hud_draw_context_mr hudctx, const hud_ar_scale_f
 		grs_bitmap *const bm;
 	public:
 		gauge_key(const unsigned key_icon, const local_multires_gauge_graphic multires_gauge_graphic) :
-			bm(&GameBitmaps[static_cast<void>(multires_gauge_graphic), PAGE_IN_GAUGE(key_icon, multires_gauge_graphic), GET_GAUGE_INDEX(key_icon)])
+			bm(&GameBitmaps[(static_cast<void>(multires_gauge_graphic), PAGE_IN_GAUGE(key_icon, multires_gauge_graphic), GET_GAUGE_INDEX(key_icon))])
 		{
 		}
 		grs_bitmap *operator->() const
@@ -1205,15 +1205,18 @@ static void hud_show_orbs(grs_canvas &canvas, const player_info &player_info, co
 		const auto &&fspacy1 = FSPACY(1);
 		int x, y = LINE_SPACING(*canvas.cv_font, *GAME_FONT) + fspacy1;
 		const auto &&hud_scale_ar = HUD_SCALE_AR(grd_curscreen->get_screen_width(), grd_curscreen->get_screen_height(), multires_gauge_graphic);
-		if (PlayerCfg.CockpitMode[1] == CM_FULL_COCKPIT) {
+		if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_cockpit)
+		{
 			x = (SWIDTH/18);
 		}
 		else
 		{
 			x = FSPACX(2);
-		if (PlayerCfg.CockpitMode[1] == CM_STATUS_BAR) {
+		if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar)
+		{
 		}
-		else if (PlayerCfg.CockpitMode[1] == CM_FULL_SCREEN) {
+		else if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen)
+		{
 			y = hud_scale_ar(GameBitmaps[ GET_GAUGE_INDEX(GAUGE_LIVES) ].bm_h + GameBitmaps[ GET_GAUGE_INDEX(KEY_ICON_RED) ].bm_h + 4) + fspacy1;
 		}
 		else
@@ -1236,15 +1239,18 @@ static void hud_show_flag(grs_canvas &canvas, const player_info &player_info, co
 	if (game_mode_capture_flag() && (player_info.powerup_flags & PLAYER_FLAGS_FLAG)) {
 		int x, y = GameBitmaps[ GET_GAUGE_INDEX(GAUGE_LIVES) ].bm_h + 2, icon;
 		const auto &&fspacy1 = FSPACY(1);
-		if (PlayerCfg.CockpitMode[1] == CM_FULL_COCKPIT) {
+		if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_cockpit)
+		{
 			x = (SWIDTH/10);
 		}
 		else
 		{
 			x = FSPACX(2);
-		if (PlayerCfg.CockpitMode[1] == CM_STATUS_BAR) {
+		if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar)
+		{
 		}
-		else if (PlayerCfg.CockpitMode[1] == CM_FULL_SCREEN) {
+		else if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen)
+		{
 			y += GameBitmaps[GET_GAUGE_INDEX(KEY_ICON_RED)].bm_h + 2;
 		}
 		else
@@ -1357,15 +1363,17 @@ static void show_bomb_count(grs_canvas &canvas, const player_info &player_info, 
 }
 }
 
+namespace {
 static void draw_primary_ammo_info(const hud_draw_context_hs_mr hudctx, const unsigned ammo_count)
 {
 	int x, y;
 	auto &multires_gauge_graphic = hudctx.multires_gauge_graphic;
-	if (PlayerCfg.CockpitMode[1] == CM_STATUS_BAR)
+	if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar)
 		x = SB_PRIMARY_AMMO_X, y = SB_PRIMARY_AMMO_Y;
 	else
 		x = PRIMARY_AMMO_X, y = PRIMARY_AMMO_Y;
 	draw_ammo_info(hudctx.canvas, hudctx.xscale(x), hudctx.yscale(y), ammo_count);
+}
 }
 
 namespace dcx {
@@ -1379,11 +1387,11 @@ constexpr rgb_t hud_rgb_gray = {6, 6, 6};
 }
 
 namespace dsx {
+namespace {
+
 #if defined(DXX_BUILD_DESCENT_II)
 constexpr rgb_t hud_rgb_yellow = {30, 30, 0};
 #endif
-
-namespace {
 
 [[nodiscard]]
 static rgb_t hud_get_primary_weapon_fontcolor(const player_info &player_info, const primary_weapon_index_t consider_weapon)
@@ -1560,7 +1568,7 @@ static void hud_show_primary_weapons_mode(grs_canvas &canvas, const player_info 
 				 * specially in a large Descent2 block below.
 				 */
 				int vx, vy;
-				if (PlayerCfg.CockpitMode[1] == CM_FULL_SCREEN ? (
+				if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen ? (
 						vertical ? (
 #if defined(DXX_BUILD_DESCENT_I)
 							vx = x, vy = y, true
@@ -1613,7 +1621,7 @@ static void hud_show_primary_weapons_mode(grs_canvas &canvas, const player_info 
 					txtweapon = "P";
 					break;
 				case primary_weapon_index_t::OMEGA_INDEX:
-					if (PlayerCfg.CockpitMode[1] == CM_FULL_SCREEN && (player_info.primary_weapon_flags & HAS_OMEGA_FLAG))
+					if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen && (player_info.primary_weapon_flags & HAS_OMEGA_FLAG))
 					{
 						snprintf(weapon_str, sizeof(weapon_str), "O%3i", player_info.Omega_charge * 100 / MAX_OMEGA_CHARGE);
 						txtweapon = weapon_str;
@@ -1631,7 +1639,7 @@ static void hud_show_primary_weapons_mode(grs_canvas &canvas, const player_info 
 				x -= w + fspacx3;
 			if (i == primary_weapon_index_t::SUPER_LASER_INDEX)
 			{
-				if (vertical && (PlayerCfg.CockpitMode[1]==CM_FULL_SCREEN))
+				if (vertical && (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen))
 					hud_printf_vulcan_ammo(canvas, player_info, x, y);
 				continue;
 			}
@@ -1878,7 +1886,7 @@ static void hud_show_lives(const hud_draw_context_hs_mr hudctx, const hud_ar_sca
 	if (Newdemo_state == ND_STATE_PLAYBACK)
 		return;
 
-	const int x = (PlayerCfg.CockpitMode[1] == CM_FULL_COCKPIT)
+	const int x = (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_cockpit)
 		? static_cast<int>(hudctx.xscale(7))
 		: static_cast<int>(FSPACX(2));
 
@@ -1989,7 +1997,8 @@ static void common_add_points_to_score(const int points, int &score, const game_
 	{
 		int snd;
 		get_local_player().lives += current_ship_score - previous_ship_score;
-		powerup_basic_str(20, 20, 20, 0, TXT_EXTRA_LIFE);
+		const auto &&m = TXT_EXTRA_LIFE;
+		powerup_basic_str(20, 20, 20, 0, {m, strlen(m)});
 		if ((snd=Powerup_info[POW_EXTRA_LIFE].hit_sound) > -1 )
 			digi_play_sample( snd, F1_0 );
 	}
@@ -2171,13 +2180,17 @@ namespace {
 static void draw_wbu_overlay(const hud_draw_context_hs_mr hudctx)
 {
 	auto &multires_gauge_graphic = hudctx.multires_gauge_graphic;
-#if defined(DXX_BUILD_DESCENT_I)
-	unsigned cockpit_idx = PlayerCfg.CockpitMode[1];
-#elif defined(DXX_BUILD_DESCENT_II)
-	unsigned cockpit_idx = PlayerCfg.CockpitMode[1]+(multires_gauge_graphic.is_hires() ? (Num_cockpits / 2) : 0);
+	const auto raw_cockpit_mode = PlayerCfg.CockpitMode[1];
+	const auto cockpit_idx =
+#if defined(DXX_BUILD_DESCENT_II)
+		multires_gauge_graphic.is_hires()
+		? static_cast<cockpit_mode_t>(underlying_value(raw_cockpit_mode) + (Num_cockpits / 2))
+		:
 #endif
-	PIGGY_PAGE_IN(cockpit_bitmap[cockpit_idx]);
-	grs_bitmap *bm = &GameBitmaps[cockpit_bitmap[cockpit_idx].index];
+		raw_cockpit_mode;
+	const auto cb = cockpit_bitmap[cockpit_idx];
+	PIGGY_PAGE_IN(cb);
+	grs_bitmap *const bm = &GameBitmaps[cb];
 
 	cockpit_decode_alpha(hudctx, bm);
 
@@ -2428,7 +2441,7 @@ static void show_cockpit_cloak_invul_timer(grs_canvas &canvas, const fix64 effec
 	snprintf(countdown, sizeof(countdown), "%lu", static_cast<unsigned long>(effect_end / F1_0));
 	gr_set_fontcolor(canvas, BM_XRGB(31, 31, 31), -1);
 	const auto &&[ow, oh] = gr_get_string_size(*canvas.cv_font, countdown);
-	const int x = grd_curscreen->get_screen_width() / (PlayerCfg.CockpitMode[1] == CM_STATUS_BAR
+	const int x = grd_curscreen->get_screen_width() / (PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar
 		? 2.266
 		: 1.951
 	);
@@ -2560,6 +2573,9 @@ static void draw_numerical_display(const draw_numerical_display_draw_context hud
 
 }
 
+namespace dsx {
+namespace {
+
 void draw_keys_state::draw_all_cockpit_keys()
 {
 	auto &multires_gauge_graphic = hudctx.multires_gauge_graphic;
@@ -2567,10 +2583,6 @@ void draw_keys_state::draw_all_cockpit_keys()
 	draw_one_key(GAUGE_GOLD_KEY_X, GAUGE_GOLD_KEY_Y, GAUGE_GOLD_KEY, PLAYER_FLAGS_GOLD_KEY);
 	draw_one_key(GAUGE_RED_KEY_X, GAUGE_RED_KEY_Y, GAUGE_RED_KEY, PLAYER_FLAGS_RED_KEY);
 }
-
-namespace dsx {
-
-namespace {
 
 static void draw_weapon_info_sub(const hud_draw_context_hs_mr hudctx, const player_info &player_info, const int info_index, const gauge_box *const box, const int pic_x, const int pic_y, const char *const name, const int text_x, const int text_y)
 {
@@ -2584,16 +2596,15 @@ static void draw_weapon_info_sub(const hud_draw_context_hs_mr hudctx, const play
 #endif
 		gr_rect(hudctx.canvas, hudctx.xscale(box->left), hudctx.yscale(box->top), hudctx.xscale(box->right), hudctx.yscale(box->bot + bottom_bias), color);
 	}
-	const auto &picture = 
+	const auto picture = 
 #if defined(DXX_BUILD_DESCENT_II)
 	// !SHAREWARE
-		(Piggy_hamfile_version >= 3 && hudctx.multires_gauge_graphic.is_hires()) ?
+		(Piggy_hamfile_version >= pig_hamfile_version::_3 && hudctx.multires_gauge_graphic.is_hires()) ?
 			Weapon_info[info_index].hires_picture :
 #endif
 			Weapon_info[info_index].picture;
 	PIGGY_PAGE_IN(picture);
-	auto &bm = GameBitmaps[picture.index];
-
+	auto &bm = GameBitmaps[picture];
 	hud_bitblt(hudctx, pic_x, pic_y, bm);
 
 	if (PlayerCfg.HudMode == HudType::Standard)
@@ -2640,7 +2651,7 @@ static void draw_primary_weapon_info(const hud_draw_context_hs_mr hudctx, const 
 		auto &multires_gauge_graphic = hudctx.multires_gauge_graphic;
 		auto &resbox = gauge_boxes[multires_gauge_graphic.hiresmode];
 		auto &weaponbox = resbox[gauge_inset_window_view::primary];
-		if (PlayerCfg.CockpitMode[1] == CM_STATUS_BAR)
+		if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar)
 		{
 			box = &weaponbox[gauge_hud_type::statusbar];
 			pic_x = SB_PRIMARY_W_PIC_X;
@@ -2683,7 +2694,7 @@ static void draw_secondary_weapon_info(const hud_draw_context_hs_mr hudctx, cons
 		auto &multires_gauge_graphic = hudctx.multires_gauge_graphic;
 		auto &resbox = gauge_boxes[multires_gauge_graphic.hiresmode];
 		auto &weaponbox = resbox[gauge_inset_window_view::secondary];
-		if (PlayerCfg.CockpitMode[1] == CM_STATUS_BAR)
+		if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar)
 		{
 			box = &weaponbox[gauge_hud_type::statusbar];
 			pic_x = SB_SECONDARY_W_PIC_X;
@@ -2723,7 +2734,6 @@ static void draw_weapon_info(const hud_draw_context_hs_mr hudctx, const player_i
 }
 
 }
-
 }
 
 namespace {
@@ -2741,7 +2751,7 @@ static void draw_secondary_ammo_info(const hud_draw_context_hs_mr hudctx, const 
 {
 	int x, y;
 	auto &multires_gauge_graphic = hudctx.multires_gauge_graphic;
-	if (PlayerCfg.CockpitMode[1] == CM_STATUS_BAR)
+	if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar)
 		x = SB_SECONDARY_AMMO_X, y = SB_SECONDARY_AMMO_Y;
 	else
 		x = SECONDARY_AMMO_X, y = SECONDARY_AMMO_Y;
@@ -2810,7 +2820,7 @@ static void draw_weapon_box(const hud_draw_context_hs_mr hudctx, const player_in
 		gr_settransblend(canvas, static_cast<gr_fade_level>(fade_value), gr_blend::normal);
 		auto &resbox = gauge_boxes[multires_gauge_graphic.hiresmode];
 		auto &weaponbox = resbox[wt];
-		auto &g = weaponbox[(PlayerCfg.CockpitMode[1] == CM_STATUS_BAR) ? gauge_hud_type::statusbar : gauge_hud_type::cockpit];
+		auto &g = weaponbox[(PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar) ? gauge_hud_type::statusbar : gauge_hud_type::cockpit];
 		auto &canvas = hudctx.canvas;
 		gr_rect(canvas, hudctx.xscale(g.left), hudctx.yscale(g.top), hudctx.xscale(g.right), hudctx.yscale(g.bot), 0);
 
@@ -2843,10 +2853,10 @@ static void draw_static(const d_vclip_array &Vclip, const hud_draw_context_hs_mr
 
 	PIGGY_PAGE_IN(vc->frames[framenum]);
 
-	auto &bmp = GameBitmaps[vc->frames[framenum].index];
+	auto &bmp = GameBitmaps[vc->frames[framenum]];
 	auto &resbox = gauge_boxes[multires_gauge_graphic.hiresmode];
 	auto &weaponbox = resbox[win];
-	auto &box = weaponbox[(PlayerCfg.CockpitMode[1] == CM_STATUS_BAR) ? gauge_hud_type::statusbar : gauge_hud_type::cockpit];
+	auto &box = weaponbox[(PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar) ? gauge_hud_type::statusbar : gauge_hud_type::cockpit];
 #if !DXX_USE_OGL
 	for (x = box.left; x < box.right; x += bmp.bm_w)
 		for (y = box.top; y < box.bot; y += bmp.bm_h)
@@ -3025,7 +3035,6 @@ static void sb_draw_shield_bar(const hud_draw_context_hs_mr hudctx, const int sh
 }
 
 namespace dsx {
-
 namespace {
 
 void draw_keys_state::draw_all_statusbar_keys()
@@ -3056,7 +3065,7 @@ static void draw_invulnerable_ship(const hud_draw_context_hs_mr hudctx, const ob
 		time = ltime;
 		unsigned x, y;
 		auto &multires_gauge_graphic = hudctx.multires_gauge_graphic;
-		if (cmmode == CM_STATUS_BAR)
+		if (cmmode == cockpit_mode_t::status_bar)
 		{
 			x = SB_SHIELD_GAUGE_X;
 			y = SB_SHIELD_GAUGE_Y;
@@ -3075,7 +3084,7 @@ static void draw_invulnerable_ship(const hud_draw_context_hs_mr hudctx, const ob
 	else
 	{
 		const auto shields_ir = f2ir(plrobj.shields);
-		if (cmmode == CM_STATUS_BAR)
+		if (cmmode == cockpit_mode_t::status_bar)
 			sb_draw_shield_bar(hudctx, shields_ir);
 		else
 			draw_shield_bar(hudctx, shields_ir);
@@ -3083,10 +3092,9 @@ static void draw_invulnerable_ship(const hud_draw_context_hs_mr hudctx, const ob
 }
 
 }
-
 }
 
-const rgb_array_t player_rgb_normal{{
+constexpr rgb_array_t player_rgb_normal{{
 							{15,15,23},
 							{27,0,0},
 							{0,23,0},
@@ -3154,7 +3162,7 @@ void show_reticle(grs_canvas &canvas, const player_info &player_info, int reticl
 	if (primary_bm_num && Primary_weapon == primary_weapon_index_t::LASER_INDEX && (player_info.powerup_flags & PLAYER_FLAGS_QUAD_LASERS))
 		primary_bm_num++;
 
-	if (Secondary_weapon_to_gun_num[Secondary_weapon]==7)
+	if (Secondary_weapon_to_gun_num[Secondary_weapon] == gun_num_t::_7)
 		secondary_bm_num += 3;		//now value is 0,1 or 3,4
 	else if (secondary_bm_num && !(player_info.missile_gun & 1))
 			secondary_bm_num++;
@@ -3357,14 +3365,15 @@ static void hud_show_kill_list(fvcobjptr &vcobjptr, grs_canvas &canvas, const ga
 	const auto &&line_spacing = LINE_SPACING(game_font, game_font);
 	save_y = y = canvas.cv_bitmap.bm_h - n_left * line_spacing;
 
-	if (PlayerCfg.CockpitMode[1] == CM_FULL_COCKPIT) {
+	if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_cockpit)
+	{
 		save_y = y -= fspacx(6);
 		if (is_multiplayer_cooperative)
 			x1 = fspacx(33);
 	}
 
 	const auto bm_w = canvas.cv_bitmap.bm_w;
-	const auto &&bmw_x0_cockpit = bm_w - fspacx(PlayerCfg.CockpitMode[1] == CM_FULL_COCKPIT ? 53 : 60);
+	const auto &&bmw_x0_cockpit = bm_w - fspacx(PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_cockpit ? 53 : 60);
 	// Right edge of name, change this for width problems
 	const auto &&bmw_x1_multi = bm_w - fspacx(is_multiplayer_cooperative ? 27 : 15);
 	const auto &&fspacx1 = fspacx(1);
@@ -3407,7 +3416,7 @@ static void hud_show_kill_list(fvcobjptr &vcobjptr, grs_canvas &canvas, const ga
 		rgb color;
 		if (Show_kill_list == show_kill_list_mode::_1 || Show_kill_list == show_kill_list_mode::efficiency)
 		{
-			if (vcplayerptr(player_num)->connected != CONNECT_PLAYING)
+			if (vcplayerptr(player_num)->connected != player_connection_status::playing)
 				color.r = color.g = color.b = 12;
 			else {
 				color = player_rgb[get_player_or_team_color(player_num)];
@@ -3477,39 +3486,41 @@ static void hud_show_kill_list(fvcobjptr &vcobjptr, grs_canvas &canvas, const ga
 }
 
 //returns true if viewer can see object
-static int see_object(fvcobjptridx &vcobjptridx, const vcobjptridx_t objnum)
+static int see_object(const d_robot_info_array &Robot_info, fvcobjptridx &vcobjptridx, const vcobjptridx_t objnum)
 {
-	fvi_query fq;
-	int hit_type;
 	fvi_info hit_data;
 
 	//see if we can see this player
-
-	fq.p0 					= &Viewer->pos;
-	fq.p1 					= &objnum->pos;
-	fq.rad 					= 0;
-	fq.thisobjnum			= vcobjptridx(Viewer);
-	fq.flags 				= FQ_TRANSWALL | FQ_CHECK_OBJS | FQ_GET_SEGLIST;
-	fq.startseg				= Viewer->segnum;
-	fq.ignore_obj_list.first = nullptr;
-
-	hit_type = find_vector_intersection(fq, hit_data);
-
-	return (hit_type == HIT_OBJECT && hit_data.hit_object == objnum);
+	const auto hit_type = find_vector_intersection(fvi_query{
+		Viewer->pos,
+		objnum->pos,
+		fvi_query::unused_ignore_obj_list,
+		&LevelUniqueObjectState,
+		/* This is only necessary if `Viewer` can be a robot.  In developer
+		 * builds, the user can view from any object, not just a player.
+		 */
+		&Robot_info,
+		FQ_TRANSWALL,
+		vcobjptridx(Viewer),
+	}, Viewer->segnum, 0, hit_data);
+	return hit_type == fvi_hit_type::Object && hit_data.hit_object == objnum;
 }
 
 }
 
 //show names of teammates & players carrying flags
 
-void show_HUD_names(grs_canvas &canvas, const game_mode_flags Game_mode)
+void show_HUD_names(const d_robot_info_array &Robot_info, grs_canvas &canvas, const game_mode_flags Game_mode)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vcobjptr = Objects.vcptr;
 	auto &vcobjptridx = Objects.vcptridx;
 	for (playernum_t pnum = 0;pnum < N_players; ++pnum)
 	{
-		if (pnum == Player_num || vcplayerptr(pnum)->connected != CONNECT_PLAYING)
+		if (pnum == Player_num)
+			continue;
+		auto &plr = *vcplayerptr(pnum);
+		if (plr.connected != player_connection_status::playing)
 			continue;
 		// ridiculusly complex to check if we want to show something... but this is readable at least.
 
@@ -3526,7 +3537,7 @@ void show_HUD_names(grs_canvas &canvas, const game_mode_flags Game_mode)
 				continue;			//..so don't show name
 		}
 		else
-			objnum = vcplayerptr(pnum)->objnum;
+			objnum = plr.objnum;
 
 		const auto &&objp = vcobjptridx(objnum);
 		const auto &pl_flags = objp->ctype.player_info.powerup_flags;
@@ -3544,54 +3555,81 @@ void show_HUD_names(grs_canvas &canvas, const game_mode_flags Game_mode)
 			(is_bounty_target || ((game_mode_capture_flag() || game_mode_hoard()) && (pl_flags & PLAYER_FLAGS_FLAG)));
 #endif
 
-		if ((show_name || show_typing || show_indi) && see_object(vcobjptridx, objp))
+		if ((show_name || show_typing || show_indi) && see_object(Robot_info, vcobjptridx, objp))
 		{
 			auto player_point = g3_rotate_point(objp->pos);
-			if (player_point.p3_codes == 0) //on screen
+			if (player_point.p3_codes == clipping_code::None) //on screen
 			{
 				g3_project_point(player_point);
-				if (!(player_point.p3_flags & PF_OVERFLOW))
+				if (!(player_point.p3_flags & projection_flag::overflow))
 				{
-					fix x,y,dx,dy;
-					char s[CALLSIGN_LEN+10];
-					int x1, y1;
-
-					x = player_point.p3_sx;
-					y = player_point.p3_sy;
-					dy = -fixmuldiv(fixmul(objp->size, Matrix_scale.y), i2f(canvas.cv_bitmap.bm_h) / 2, player_point.p3_z);
-					dx = fixmul(dy,grd_curscreen->sc_aspect);
+					const fix x = player_point.p3_sx;
+					const fix y = player_point.p3_sy;
+					const fix dy = -fixmuldiv(fixmul(objp->size, Matrix_scale.y), i2f(canvas.cv_bitmap.bm_h) / 2, player_point.p3_z);
+					const fix dx = fixmul(dy, grd_curscreen->sc_aspect);
 					/* Set the text to show */
-					const char *name = NULL;
-					if(is_bounty_target)
-						name = "Target";
-					else if (show_name)
-						name = static_cast<const char *>(vcplayerptr(pnum)->callsign);
-					const char *trailer = NULL;
-					if (show_typing)
-					{
-						if (multi_sending_message[pnum] == msgsend_state::typing)
-							trailer = "Typing";
-						else if (multi_sending_message[pnum] == msgsend_state::automap)
-							trailer = "Map";
-					}
-					int written = snprintf(s, sizeof(s), "%s%s%s", name ? name : "", name && trailer ? ", " : "", trailer ? trailer : "");
-					if (written)
+					const auto name = is_bounty_target
+						? "Target"
+						: (show_name
+							? plr.callsign.operator const char *()
+							: nullptr);
+					const auto trailer = show_typing
+						? ({
+							const auto m = multi_sending_message[pnum];
+							m == msgsend_state::typing
+							? ", Typing"
+							: m == msgsend_state::automap
+								? ", Map"
+								: nullptr;
+							})
+						: nullptr;
+					/* If both `name` and `trailer` are present, then
+					 * concatenate them into label_storage.  If successful, set
+					 * `s` to `label_storage`.  Otherwise, set `s` to
+					 * `nullptr`.
+					 *
+					 * If exactly one of `name` or `trailer` is present, set
+					 * `s` to the one that is present.  In the case that
+					 * `trailer` is present, skip the leading literal `", "`
+					 * that is necessary for the name-present case, but not
+					 * necessary for the name-absent case.
+					 *
+					 * If neither is present, set `s` to `trailer`, which by
+					 * definition is `nullptr` in this branch.
+					 *
+					 * Finally, if `s` is not `nullptr`, then something can be
+					 * shown.  Show whatever `s` points at, which will be one
+					 * of:
+					 * - `label_storage`
+					 * - `name`
+					 * - `&trailer[2]`
+					 */
+					std::array<char, CALLSIGN_LEN + 10> label_storage;
+					if (const auto s = name
+						? (
+							trailer
+							? (std::snprintf(label_storage.data(), label_storage.size(), "%s%s", name, trailer) > 0 ? label_storage.data() : nullptr)
+							: name
+						)
+						: (
+							trailer ? &trailer[2] : trailer
+						)
+					)
 					{
 						const auto &&[w, h] = gr_get_string_size(*canvas.cv_font, s);
 						const auto color = get_player_or_team_color(pnum);
-						gr_set_fontcolor(canvas, BM_XRGB(player_rgb[color].r, player_rgb[color].g, player_rgb[color].b), -1);
-						x1 = f2i(x)-w/2;
-						y1 = f2i(y-dy)+FSPACY(1);
+						auto &c = player_rgb[color];
+						gr_set_fontcolor(canvas, BM_XRGB(c.r, c.g, c.b), -1);
+						const int x1 = f2i(x) - w / 2;
+						const int y1 = f2i(y - dy) + FSPACY(1);
 						gr_string(canvas, *canvas.cv_font, x1, y1, s, w, h);
 					}
 
 					/* Draw box on HUD */
 					if (show_indi)
 					{
-						fix w,h;
-
-						w = dx/4;
-						h = dy/4;
+						const fix w = dx / 4;
+						const fix h = dy / 4;
 
 							struct {
 								int r, g, b;
@@ -3630,7 +3668,7 @@ void show_HUD_names(grs_canvas &canvas, const game_mode_flags Game_mode)
 }
 
 //draw all the things on the HUD
-void draw_hud(grs_canvas &canvas, const object &plrobj, const control_info &Controls, const game_mode_flags Game_mode)
+void draw_hud(const d_robot_info_array &Robot_info, grs_canvas &canvas, const object &plrobj, const control_info &Controls, const game_mode_flags Game_mode)
 {
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vcobjptr = Objects.vcptr;
@@ -3652,7 +3690,7 @@ void draw_hud(grs_canvas &canvas, const object &plrobj, const control_info &Cont
 		return;
 
 	// Cruise speed
-	if (Viewer->type == OBJ_PLAYER && get_player_id(vcobjptr(Viewer)) == Player_num && PlayerCfg.CockpitMode[1] != CM_REAR_VIEW)
+	if (auto &viewer = *Viewer; viewer.type == OBJ_PLAYER && get_player_id(viewer) == Player_num && PlayerCfg.CockpitMode[1] != cockpit_mode_t::rear_view)
 	{
 		int	x = FSPACX(1);
 		int	y = canvas.cv_bitmap.bm_h;
@@ -3661,11 +3699,14 @@ void draw_hud(grs_canvas &canvas, const object &plrobj, const control_info &Cont
 		if (Cruise_speed > 0) {
 			auto &game_font = *GAME_FONT;
 			const auto &&line_spacing = LINE_SPACING(game_font, game_font);
-			if (PlayerCfg.CockpitMode[1]==CM_FULL_SCREEN) {
+			if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen)
+			{
 				y -= (Game_mode & GM_MULTI)
 					? line_spacing * 10
 					: line_spacing * 6;
-			} else if (PlayerCfg.CockpitMode[1] == CM_STATUS_BAR) {
+			}
+			else if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar)
+			{
 				y -= (Game_mode & GM_MULTI)
 					? line_spacing * 6
 					: line_spacing * 1;
@@ -3680,26 +3721,28 @@ void draw_hud(grs_canvas &canvas, const object &plrobj, const control_info &Cont
 	}
 
 	//	Show score so long as not in rearview
-	if ( !Rear_view && PlayerCfg.CockpitMode[1]!=CM_REAR_VIEW && PlayerCfg.CockpitMode[1]!=CM_STATUS_BAR) {
+	if (!Rear_view && PlayerCfg.CockpitMode[1] != cockpit_mode_t::rear_view && PlayerCfg.CockpitMode[1] != cockpit_mode_t::status_bar)
+	{
 		hud_show_score(canvas, player_info, Game_mode);
 		if (score_time)
 			hud_show_score_added(canvas, Game_mode);
 	}
 
-	if ( !Rear_view && PlayerCfg.CockpitMode[1]!=CM_REAR_VIEW)
+	if (!Rear_view && PlayerCfg.CockpitMode[1] != cockpit_mode_t::rear_view)
 		hud_show_timer_count(canvas, Game_mode);
 
 	//	Show other stuff if not in rearview or letterbox.
-	if (!Rear_view && PlayerCfg.CockpitMode[1]!=CM_REAR_VIEW)
+	if (!Rear_view && PlayerCfg.CockpitMode[1] != cockpit_mode_t::rear_view)
 	{
-		show_HUD_names(canvas, Game_mode);
+		show_HUD_names(Robot_info, canvas, Game_mode);
 
-		if (PlayerCfg.CockpitMode[1]==CM_STATUS_BAR || PlayerCfg.CockpitMode[1]==CM_FULL_SCREEN)
+		if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar || PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen)
 			hud_show_homing_warning(canvas, player_info.homing_object_dist);
 
 		const local_multires_gauge_graphic multires_gauge_graphic = {};
 		const hud_draw_context_hs_mr hudctx(canvas, grd_curscreen->get_screen_width(), grd_curscreen->get_screen_height(), multires_gauge_graphic);
-		if (PlayerCfg.CockpitMode[1]==CM_FULL_SCREEN) {
+		if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen)
+		{
 
 			auto &game_font = *GAME_FONT;
 			const auto &&line_spacing = LINE_SPACING(game_font, game_font);
@@ -3736,7 +3779,7 @@ void draw_hud(grs_canvas &canvas, const object &plrobj, const control_info &Cont
 #endif
 
 #if defined(DXX_BUILD_DESCENT_II)
-		if (PlayerCfg.CockpitMode[1] != CM_LETTERBOX && PlayerCfg.CockpitMode[1] != CM_REAR_VIEW)
+		if (PlayerCfg.CockpitMode[1] != cockpit_mode_t::letterbox && PlayerCfg.CockpitMode[1] != cockpit_mode_t::rear_view)
 		{
 			hud_show_flag(canvas, player_info, multires_gauge_graphic);
 			hud_show_orbs(canvas, player_info, multires_gauge_graphic);
@@ -3744,13 +3787,13 @@ void draw_hud(grs_canvas &canvas, const object &plrobj, const control_info &Cont
 #endif
 		HUD_render_message_frame(canvas);
 
-		if (PlayerCfg.CockpitMode[1]!=CM_STATUS_BAR)
+		if (PlayerCfg.CockpitMode[1] != cockpit_mode_t::status_bar)
 			hud_show_lives(hudctx, HUD_SCALE_AR(grd_curscreen->get_screen_width(), grd_curscreen->get_screen_height(), multires_gauge_graphic), player_info, Game_mode & GM_MULTI);
 		if (Game_mode&GM_MULTI && Show_kill_list != show_kill_list_mode::None)
 			hud_show_kill_list(vcobjptr, canvas, Game_mode);
-		if (PlayerCfg.CockpitMode[1] != CM_LETTERBOX)
+		if (PlayerCfg.CockpitMode[1] != cockpit_mode_t::letterbox)
 			show_reticle(canvas, player_info, PlayerCfg.ReticleType, 1);
-		if (PlayerCfg.CockpitMode[1] != CM_LETTERBOX && Newdemo_state != ND_STATE_PLAYBACK && PlayerCfg.MouseFlightSim && PlayerCfg.MouseFSIndicator)
+		if (PlayerCfg.CockpitMode[1] != cockpit_mode_t::letterbox && Newdemo_state != ND_STATE_PLAYBACK && PlayerCfg.MouseFlightSim && PlayerCfg.MouseFSIndicator)
 		{
 			const auto gwidth = canvas.cv_bitmap.bm_w;
 			const auto gheight = canvas.cv_bitmap.bm_h;
@@ -3759,7 +3802,8 @@ void draw_hud(grs_canvas &canvas, const object &plrobj, const control_info &Cont
 		}
 	}
 
-	if (Rear_view && PlayerCfg.CockpitMode[1]!=CM_REAR_VIEW) {
+	if (Rear_view && PlayerCfg.CockpitMode[1] != cockpit_mode_t::rear_view)
+	{
 		HUD_render_message_frame(canvas);
 		gr_set_fontcolor(canvas, BM_XRGB(0, 31, 0), -1);
 		auto &game_font = *GAME_FONT;
@@ -3778,7 +3822,7 @@ void render_gauges(grs_canvas &canvas, const game_mode_flags Game_mode)
 	auto &pl_flags = player_info.powerup_flags;
 	const auto cloak = (pl_flags & PLAYER_FLAGS_CLOAKED);
 
-	Assert(PlayerCfg.CockpitMode[1]==CM_FULL_COCKPIT || PlayerCfg.CockpitMode[1]==CM_STATUS_BAR);
+	assert(PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_cockpit || PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar);
 
 	auto shields = f2ir(plrobj.shields);
 	if (shields < 0 ) shields = 0;
@@ -3795,7 +3839,8 @@ void render_gauges(grs_canvas &canvas, const game_mode_flags Game_mode)
 	const local_multires_gauge_graphic multires_gauge_graphic{};
 	const hud_draw_context_hs_mr hudctx(canvas, grd_curscreen->get_screen_width(), grd_curscreen->get_screen_height(), multires_gauge_graphic);
 	draw_weapon_boxes(hudctx, player_info);
-	if (PlayerCfg.CockpitMode[1] == CM_FULL_COCKPIT) {
+	if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_cockpit)
+	{
 		if (Newdemo_state == ND_STATE_RECORDING)
 			newdemo_record_player_energy(energy);
 		draw_energy_bar(*grd_curcanv, hudctx, energy);
@@ -3826,7 +3871,9 @@ void render_gauges(grs_canvas &canvas, const game_mode_flags Game_mode)
 		show_homing_warning(hudctx, player_info.homing_object_dist);
 		draw_wbu_overlay(hudctx);
 
-	} else if (PlayerCfg.CockpitMode[1] == CM_STATUS_BAR) {
+	}
+	else if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar)
+	{
 
 		if (Newdemo_state == ND_STATE_RECORDING)
 			newdemo_record_player_energy(energy);
@@ -3920,7 +3967,7 @@ void do_cockpit_window_view(grs_canvas &canvas, const gauge_inset_window_view wi
 
 	const local_multires_gauge_graphic multires_gauge_graphic{};
 	const hud_draw_context_hs_mr hudctx(window_canv, grd_curscreen->get_screen_width(), grd_curscreen->get_screen_height(), multires_gauge_graphic);
-	if (PlayerCfg.CockpitMode[1] == CM_FULL_SCREEN)
+	if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen)
 	{
 		const unsigned w = HUD_SCALE_AR(hudctx.xscale, hudctx.yscale)(multires_gauge_graphic.get(106, 44));
 		const unsigned h = w;
@@ -3933,12 +3980,12 @@ void do_cockpit_window_view(grs_canvas &canvas, const gauge_inset_window_view wi
 		gr_init_sub_canvas(window_canv, canvas, window_x, window_y, w, h);
 	}
 	else {
-		if (PlayerCfg.CockpitMode[1] != CM_FULL_COCKPIT && PlayerCfg.CockpitMode[1] != CM_STATUS_BAR)
+		if (PlayerCfg.CockpitMode[1] != cockpit_mode_t::full_cockpit && PlayerCfg.CockpitMode[1] != cockpit_mode_t::status_bar)
 			goto abort;
 
 		auto &resbox = gauge_boxes[multires_gauge_graphic.hiresmode];
 		auto &weaponbox = resbox[win];
-		const auto box = &weaponbox[(PlayerCfg.CockpitMode[1] == CM_STATUS_BAR) ? gauge_hud_type::statusbar : gauge_hud_type::cockpit];
+		const auto box = &weaponbox[(PlayerCfg.CockpitMode[1] == cockpit_mode_t::status_bar) ? gauge_hud_type::statusbar : gauge_hud_type::cockpit];
 		gr_init_sub_canvas(window_canv, canvas, hudctx.xscale(box->left), hudctx.yscale(box->top), hudctx.xscale(box->right - box->left + 1), hudctx.yscale(box->bot - box->top + 1));
 	}
 
@@ -3963,7 +4010,8 @@ void do_cockpit_window_view(grs_canvas &canvas, const gauge_inset_window_view wi
 	if (player_info)	// only non-nullptr for weapon_box_user::guided
 		show_reticle(window_canv, *player_info, RET_TYPE_CROSS_V1, 0);
 
-	if (PlayerCfg.CockpitMode[1] == CM_FULL_SCREEN) {
+	if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_screen)
+	{
 		int small_window_bottom,big_window_bottom,extra_part_h;
 
 		gr_ubox(window_canv, 0, 0, window_canv.cv_bitmap.bm_w, window_canv.cv_bitmap.bm_h, BM_XRGB(0,0,32));
@@ -3994,7 +4042,7 @@ void do_cockpit_window_view(grs_canvas &canvas, const gauge_inset_window_view wi
 			}
 		}
 	}
-	else if (PlayerCfg.CockpitMode[1] == CM_FULL_COCKPIT)
+	else if (PlayerCfg.CockpitMode[1] == cockpit_mode_t::full_cockpit)
 		/* `draw_wbu_overlay` has hard-coded x/y coordinates with their
 		 * origin at the root of the screen canvas, not the window
 		 * canvas.  Pass the screen canvas so that the coordinates are

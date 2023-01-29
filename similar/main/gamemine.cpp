@@ -402,12 +402,14 @@ struct me mine_editor;
 
 namespace {
 
-static void read_children(shared_segment &segp, const unsigned bit_mask, PHYSFS_File *const LoadFile)
+static void read_children(shared_segment &segp, const sidemask_t bit_mask, PHYSFS_File *const LoadFile)
 {
 	for (const auto bit : MAX_SIDES_PER_SEGMENT)
 	{
-		if (bit_mask & (1 << bit)) {
-			segp.children[bit] = PHYSFSX_readShort(LoadFile);
+		if (bit_mask & build_sidemask(bit))
+		{
+			const auto s = segnum_t{static_cast<uint16_t>(PHYSFSX_readShort(LoadFile))};
+			segp.children[bit] = (imsegidx_t::check_nothrow_index(s) || s == segment_exit) ? s : segment_none;
 		} else
 			segp.children[bit] = segment_none;
 	}
@@ -425,9 +427,10 @@ static void read_verts(shared_segment &segp, PHYSFS_File *const LoadFile)
 	}
 }
 
-static void read_special(shared_segment &segp, const unsigned bit_mask, PHYSFS_File *const LoadFile)
+static void read_special(shared_segment &segp, const sidemask_t bit_mask, PHYSFS_File *const LoadFile)
 {
-	if (bit_mask & (1 << MAX_SIDES_PER_SEGMENT)) {
+	if (bit_mask & build_sidemask(MAX_SIDES_PER_SEGMENT))
+	{
 		// Read ubyte	Segments[segnum].special
 		segp.special = build_segment_special_from_untrusted(PHYSFSX_readByte(LoadFile));
 		// Read byte	Segments[segnum].matcen_num
@@ -451,7 +454,6 @@ int load_mine_data_compiled(PHYSFS_File *LoadFile, const char *const Gamesave_cu
 	auto &Vertices = LevelSharedVertexState.get_vertices();
 	ubyte   compiled_version;
 	short   temp_short;
-	ubyte   bit_mask;
 
 #if defined(DXX_BUILD_DESCENT_II)
 	LevelSharedSeismicState.Level_shake_frequency = 0;
@@ -500,28 +502,37 @@ int load_mine_data_compiled(PHYSFS_File *LoadFile, const char *const Gamesave_cu
 		PHYSFSX_readVector(LoadFile, i);
 
 	const auto Num_segments = LevelSharedSegmentState.Num_segments;
-	for (segnum_t segnum=0; segnum < Num_segments; segnum++ )	{
-		const msmusegment segp = vmsegptr(segnum);
+	/* Editor builds need both the segment index and segment pointer.
+	 * Non-editor builds need only the segment pointer.
+	 */
+#if DXX_USE_EDITOR
+#define dxx_segment_iteration_factory vmptridx
+#else
+#define dxx_segment_iteration_factory vmptr
+#endif
+	for (auto &&segpi : partial_range(Segments.dxx_segment_iteration_factory, Num_segments))
+#undef dxx_segment_iteration_factory
+	{
+		const msmusegment segp = segpi;
 
 #if DXX_USE_EDITOR
-		segp.s.segnum = segnum;
+		segp.s.segnum = segpi;
 		segp.s.group = 0;
 		#endif
 
-		if (New_file_format_load)
-			bit_mask = PHYSFSX_readByte(LoadFile);
-		else
-			bit_mask = 0x7f; // read all six children and special stuff...
+		const sidemask_t children_mask = New_file_format_load
+			? static_cast<sidemask_t>(PHYSFSX_readByte(LoadFile))
+			: sidemask_t{0x7f};	// read all six children and special stuff...
 
 		if (Gamesave_current_version == 5) { // d2 SHAREWARE level
-			read_special(segp,bit_mask,LoadFile);
+			read_special(segp, children_mask, LoadFile);
 			read_verts(segp,LoadFile);
-			read_children(segp,bit_mask,LoadFile);
+			read_children(segp, children_mask, LoadFile);
 		} else {
-			read_children(segp,bit_mask,LoadFile);
+			read_children(segp, children_mask, LoadFile);
 			read_verts(segp,LoadFile);
 			if (Gamesave_current_version <= 1) { // descent 1 level
-				read_special(segp,bit_mask,LoadFile);
+				read_special(segp, children_mask, LoadFile);
 			}
 		}
 
@@ -534,14 +545,14 @@ int load_mine_data_compiled(PHYSFS_File *LoadFile, const char *const Gamesave_cu
 		}
 
 		// Read the walls as a 6 byte array
-		if (New_file_format_load)
-			bit_mask = PHYSFSX_readByte(LoadFile);
-		else
-			bit_mask = 0x3f; // read all six sides
+		const sidemask_t wall_mask = New_file_format_load
+			? static_cast<sidemask_t>(PHYSFSX_readByte(LoadFile))
+			: sidemask_t{0x3f}; // read all six sides
 		for (const auto sidenum : MAX_SIDES_PER_SEGMENT)
 		{
 			auto &sside = segp.s.sides[sidenum];
-			if (bit_mask & (1 << sidenum)) {
+			if (wall_mask & build_sidemask(sidenum))
+			{
 				const uint8_t byte_wallnum = PHYSFSX_readByte(LoadFile);
 				if ( byte_wallnum == 255 )
 					sside.wall_num = wall_none;

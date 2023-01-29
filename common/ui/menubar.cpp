@@ -46,10 +46,10 @@ namespace {
 
 struct ITEM {
 	short x = 0, y = 0, w = 0, h = 0;
-	RAIIdmem<char[]> Text;
-	RAIIdmem<char[]> InactiveText;
 	short Hotkey = -1;
 	int   			(*user_function)(void) = nullptr;
+	std::unique_ptr<char[]> Text;
+	std::unique_ptr<char[]> InactiveText;
 };
 
 struct MENU {
@@ -840,10 +840,8 @@ int menubar_init(grs_canvas &canvas, const char *const file)
 		CommaParse( 2, buf1, buffer );
 		ul_xlate(buf1);
 
-		item.Text.reset(d_strdup(buf1[0] == '-' ? buf1 : (snprintf(buf2, sizeof(buf2), " %.197s ", buf1), buf2)));
-		
-		item.InactiveText.reset(d_strdup(item.Text.get()));
-		
+		item.Text = d_strdup(buf1[0] == '-' ? buf1 : (snprintf(buf2, sizeof(buf2), " %.197s ", buf1), buf2));
+		item.InactiveText = d_strdup(item.Text.get());
 		for (int i = 0, j = 0;; i++ )
 		{
 			np = item.Text[i];

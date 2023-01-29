@@ -11,6 +11,7 @@
  *
  */
 
+#include <ranges>
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +27,7 @@
 #include "joy.h"
 #include "args.h"
 #include "partial_range.h"
+#include "backports-ranges.h"
 
 namespace dcx {
 
@@ -36,7 +38,7 @@ struct event_poll_state
 	uint8_t clean_uniframe = 1;
 	const window *const front_window = window_get_front();
 	window_event_result highest_result = window_event_result::ignored;
-	void process_event_batch(partial_range_t<const SDL_Event *>);
+	void process_event_batch(ranges::subrange<const SDL_Event *>);
 };
 
 }
@@ -58,10 +60,19 @@ static void windowevent_handler(const SDL_WindowEvent &windowevent)
 }
 #endif
 
+namespace {
+
 static void event_notify_begin_loop()
 {
 	const d_event_begin_loop event;
 	event_send(event);
+}
+
+static void event_notify_end_loop()
+{
+	event_send(d_event_end_loop{});
+}
+
 }
 
 window_event_result event_poll()
@@ -102,10 +113,11 @@ window_event_result event_poll()
 #endif
 	}
 	mouse_cursor_autohide();
+	event_notify_end_loop();
 	return state.highest_result;
 }
 
-void event_poll_state::process_event_batch(partial_range_t<const SDL_Event *> events)
+void event_poll_state::process_event_batch(const ranges::subrange<const SDL_Event *> events)
 {
 	for (auto &&event : events)
 	{
@@ -185,12 +197,6 @@ void event_flush()
 	}
 }
 
-int event_init()
-{
-	// We should now be active and responding to events.
-	return 0;
-}
-
 window_event_result call_default_handler(const d_event &event)
 {
 	return standard_handler(event);
@@ -204,7 +210,7 @@ window_event_result event_send(const d_event &event)
 	for (wind = window_get_front(); wind && handled == window_event_result::ignored; wind = window_get_prev(*wind))
 		if (wind->is_visible())
 		{
-			handled = window_send_event(*wind, event);
+			handled = wind->send_event(event);
 
 			if (handled == window_event_result::deleted) // break away if necessary: window_send_event() could have closed wind by now
 				break;
@@ -245,7 +251,7 @@ window_event_result event_process(void)
 		if (wind->is_visible())
 		{
 			auto prev = window_get_prev(*wind);
-			auto result = window_send_event(*wind, event);
+			auto result = wind->send_event(event);
 			highest_result = std::max(result, highest_result);
 			if (result == window_event_result::deleted)
 			{
@@ -265,6 +271,8 @@ window_event_result event_process(void)
 	return highest_result;
 }
 
+namespace {
+
 template <bool activate_focus>
 static void event_change_focus()
 {
@@ -279,6 +287,8 @@ static void event_change_focus()
 		mouse_disable_cursor();
 	else
 		mouse_enable_cursor();
+}
+
 }
 
 void event_enable_focus()

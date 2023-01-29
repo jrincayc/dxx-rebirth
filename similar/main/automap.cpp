@@ -269,6 +269,12 @@ static void recompute_automap_segment_visibility(const d_level_unique_automap_st
 }
 
 #if defined(DXX_BUILD_DESCENT_II)
+#ifdef RELEASE
+constexpr
+#endif
+static float MarkerScale = 2.0;
+static unsigned Marker_index;
+
 struct marker_delete_are_you_sure_menu : std::array<newmenu_item, 2>, newmenu
 {
 	using array_type = std::array<newmenu_item, 2>;
@@ -360,7 +366,6 @@ void init_automap_colors(automap &am)
 
 #if defined(DXX_BUILD_DESCENT_II)
 marker_message_text_t Marker_input;
-static float MarkerScale=2.0;
 
 d_marker_state MarkerState;
 
@@ -370,7 +375,7 @@ game_marker_index convert_player_marker_index_to_game_marker_index(const game_mo
 		return static_cast<game_marker_index>((player_num * MAX_DROP_MULTI_COOP) + static_cast<unsigned>(player_marker_num));
 	if (game_mode & GM_MULTI)
 		return static_cast<game_marker_index>((player_num * MAX_DROP_MULTI_COMPETITIVE) + static_cast<unsigned>(player_marker_num));
-	return game_marker_index{player_marker_num};
+	return static_cast<game_marker_index>(player_marker_num);
 }
 
 unsigned d_marker_state::get_markers_per_player(const game_mode_flags game_mode, const unsigned max_numplayers)
@@ -416,11 +421,6 @@ xrange<game_marker_index> get_game_marker_range(const game_mode_flags game_mode,
 }
 
 }
-#endif
-
-# define automap_draw_line g3_draw_line
-#if DXX_USE_OGL
-#define DrawMarkerNumber(C,a,b,c,d)	DrawMarkerNumber(a,b,c,d)
 #endif
 
 // -------------------------------------------------------------
@@ -494,6 +494,7 @@ static void DrawMarkerNumber(grs_canvas &canvas, const automap &am, const game_m
 	static constexpr enumerated_array<uint_fast8_t, 9, player_marker_index> NumOfPoints = {{{3, 5, 4, 3, 5, 5, 2, 5, 4}}};
 
 	const auto color = (gmi == MarkerState.HighlightMarker ? am.white_63 : am.blue_48);
+	const g3_draw_line_context text_line_context{canvas, color};
 	const auto scale_x = Matrix_scale.x;
 	const auto scale_y = Matrix_scale.y;
 	range_for (const auto &i, unchecked_partial_range(sArray[pmi], NumOfPoints[pmi]))
@@ -512,7 +513,7 @@ static void DrawMarkerNumber(grs_canvas &canvas, const automap &am, const game_m
 		g3_code_point(ToPoint);
 		g3_project_point(FromPoint);
 		g3_project_point(ToPoint);
-		automap_draw_line(canvas, FromPoint, ToPoint, color);
+		g3_draw_line(text_line_context, FromPoint, ToPoint);
 	}
 }
 
@@ -539,7 +540,7 @@ void DropBuddyMarker(object &objp)
 	static_assert(MarkerState.message.valid_index(marker_num), "not enough markers");
 
 	auto &MarkerMessage = MarkerState.message[marker_num];
-	snprintf(&MarkerMessage[0], MarkerMessage.size(), "RIP: %s", static_cast<const char *>(PlayerCfg.GuidebotName));
+	snprintf(&MarkerMessage[0u], MarkerMessage.size(), "RIP: %s", static_cast<const char *>(PlayerCfg.GuidebotName));
 
 	auto &marker_objidx = MarkerState.imobjidx[marker_num];
 	if (marker_objidx != object_none)
@@ -640,31 +641,31 @@ void automap_clear_visited(d_level_unique_automap_state &LevelUniqueAutomapState
 
 namespace {
 
-static void draw_player(grs_canvas &canvas, const object_base &obj, const uint8_t color)
+static void draw_player(const g3_draw_line_context &context, const object_base &obj)
 {
 	// Draw Console player -- shaped like a ellipse with an arrow.
 	auto sphere_point = g3_rotate_point(obj.pos);
 	const auto obj_size = obj.size;
-	g3_draw_sphere(canvas, sphere_point, obj_size, color);
+	g3_draw_sphere(context.canvas, sphere_point, obj_size, context.color);
 
 	// Draw shaft of arrow
 	const auto &&head_pos = vm_vec_scale_add(obj.pos, obj.orient.fvec, obj_size * 2);
 	{
 	auto &&arrow_point = g3_rotate_point(vm_vec_scale_add(obj.pos, obj.orient.fvec, obj_size * 3));
-	automap_draw_line(canvas, sphere_point, arrow_point, color);
+	g3_draw_line(context, sphere_point, arrow_point);
 
 	// Draw right head of arrow
 	{
 		const auto &&rhead_pos = vm_vec_scale_add(head_pos, obj.orient.rvec, obj_size);
 		auto head_point = g3_rotate_point(rhead_pos);
-		automap_draw_line(canvas, arrow_point, head_point, color);
+		g3_draw_line(context, arrow_point, head_point);
 	}
 
 	// Draw left head of arrow
 	{
 		const auto &&lhead_pos = vm_vec_scale_add(head_pos, obj.orient.rvec, -obj_size);
 		auto head_point = g3_rotate_point(lhead_pos);
-		automap_draw_line(canvas, arrow_point, head_point, color);
+		g3_draw_line(context, arrow_point, head_point);
 	}
 	}
 
@@ -672,7 +673,7 @@ static void draw_player(grs_canvas &canvas, const object_base &obj, const uint8_
 	{
 		const auto &&arrow_pos = vm_vec_scale_add(obj.pos, obj.orient.uvec, obj_size * 2);
 	auto arrow_point = g3_rotate_point(arrow_pos);
-		automap_draw_line(canvas, sphere_point, arrow_point, color);
+		g3_draw_line(context, sphere_point, arrow_point);
 	}
 }
 
@@ -875,7 +876,7 @@ static void draw_automap(fvcobjptr &vcobjptr, automap &am)
 	// Draw player...
 	const auto &self_ship_rgb = player_rgb[get_player_or_team_color(Player_num)];
 	const auto closest_color = BM_XRGB(self_ship_rgb.r, self_ship_rgb.g, self_ship_rgb.b);
-	draw_player(canvas, vcobjptr(get_local_player().objnum), closest_color);
+	draw_player(g3_draw_line_context{canvas, closest_color}, vcobjptr(get_local_player().objnum));
 
 #if defined(DXX_BUILD_DESCENT_II)
 	DrawMarkers(vcobjptr, canvas, am);
@@ -897,7 +898,7 @@ static void draw_automap(fvcobjptr &vcobjptr, automap &am)
 				if (objp.type == OBJ_PLAYER)
 				{
 					const auto &other_ship_rgb = player_rgb[get_player_or_team_color(i)];
-					draw_player(canvas, objp, BM_XRGB(other_ship_rgb.r, other_ship_rgb.g, other_ship_rgb.b));
+					draw_player(g3_draw_line_context{canvas, BM_XRGB(other_ship_rgb.r, other_ship_rgb.g, other_ship_rgb.b)}, objp);
 				}
 			}
 		}
@@ -951,7 +952,8 @@ static void draw_automap(fvcobjptr &vcobjptr, automap &am)
 		if (MarkerState.message.valid_index(HighlightMarker))
 		{
 			auto &m = MarkerState.message[HighlightMarker];
-			gr_printf(canvas, *canvas.cv_font, (SWIDTH/64), (SHEIGHT/18), "Marker %u%c %s", static_cast<unsigned>(HighlightMarker) + 1, m[0] ? ':' : 0, &m[0]);
+			auto &p = m[0u];
+			gr_printf(canvas, *canvas.cv_font, (SWIDTH / 64), (SHEIGHT / 18), "Marker %u%c %s", static_cast<unsigned>(HighlightMarker) + 1, p ? ':' : 0, &p);
 		}
 	}
 #endif
@@ -1201,6 +1203,9 @@ window_event_result automap::event_handler(const d_event &event)
 		case EVENT_LOOP_BEGIN_LOOP:
 			kconfig_begin_loop(controls);
 			break;
+		case EVENT_LOOP_END_LOOP:
+			kconfig_end_loop(controls, FrameTime);
+			break;
 
 		default:
 			return window_event_result::ignored;
@@ -1274,9 +1279,7 @@ namespace {
 
 void draw_all_edges(automap &am)
 {
-#if !DXX_USE_OGL
-	grs_canvas &canvas = am.automap_view;
-#endif
+	auto &canvas = am.automap_view;
 	auto &LevelSharedVertexState = LevelSharedSegmentState.get_vertex_state();
 	auto &Vertices = LevelSharedVertexState.get_vertices();
 	int j;
@@ -1302,7 +1305,7 @@ void draw_all_edges(automap &am)
 		if (min_distance>distance )
 			min_distance = distance;
 
-		if (!rotate_list(vcvertptr, e->verts).uand)
+		if (rotate_list(vcvertptr, e->verts).uand == clipping_code::None)
 		{			//all off screen?
 			nfacing = nnfacing = 0;
 			auto &tv1 = *vcvertptr(e->verts[0]);
@@ -1323,7 +1326,7 @@ void draw_all_edges(automap &am)
 					const uint8_t color = (e->flags & EF_NO_FADE)
 						? e->color
 						: gr_fade_table[(gr_fade_level{8})][e->color];
-					g3_draw_line(canvas, Segment_points[e->verts[0]], Segment_points[e->verts[1]], color);
+					g3_draw_line(g3_draw_line_context{canvas, color}, Segment_points[e->verts[0]], Segment_points[e->verts[1]]);
 				} 	else {
 					am.drawingListBright[nbright++] = e;
 				}
@@ -1354,7 +1357,7 @@ void draw_all_edges(automap &am)
 		const auto color = (e->flags & EF_NO_FADE)
 			? e->color
 			: gr_fade_table[static_cast<gr_fade_level>(f2i((F1_0 - fixdiv(dist, am.farthest_dist)) * 31))][e->color];	
-		g3_draw_line(canvas, *p1, *p2, color);
+		g3_draw_line(g3_draw_line_context{canvas, color}, *p1, *p2);
 	}
 }
 
@@ -1456,24 +1459,24 @@ static void add_segment_edges(fvcsegptr &vcsegptr, fvcwallptr &vcwallptr, automa
 	auto &Objects = LevelUniqueObjectState.Objects;
 	auto &vmobjptr = Objects.vmptr;
 #endif
-	ubyte	color;
-	
 	for (const auto sn : MAX_SIDES_PER_SEGMENT)
 	{
 		uint8_t hidden_flag = 0;
 		uint8_t is_grate = 0;
 		uint8_t no_fade = 0;
 
-		color = 255;
+		uint8_t color = 255;
 		if (seg->shared_segment::children[sn] == segment_none) {
 			color = am.wall_normal_color;
 		}
 
 		switch( seg->special )	{
 			case segment_special::nothing:
-			case segment_special::repaircen:
 			case segment_special::goal_blue:
 			case segment_special::goal_red:
+				break;
+			case segment_special::repaircen:
+				color = BM_XRGB(0, 0, 26);
 				break;
 			case segment_special::fuelcen:
 			color = BM_XRGB( 29, 27, 13 );
@@ -1516,6 +1519,8 @@ static void add_segment_edges(fvcsegptr &vcsegptr, fvcwallptr &vcwallptr, automa
 					if (connected_seg != segment_none) {
 						const shared_segment &vcseg = *vcsegptr(connected_seg);
 						const auto &connected_side = find_connect_side(seg, vcseg);
+						if (connected_side == side_none)
+							break;
 						auto &wall = *vcwallptr(vcseg.sides[connected_side].wall_num);
 						switch (wall.keys)
 						{
@@ -1691,8 +1696,6 @@ void automap_build_edge_list(automap &am, int add_all_edges)
 }
 
 #if defined(DXX_BUILD_DESCENT_II)
-static unsigned Marker_index;
-
 void InitMarkerInput ()
 {
 	//find free marker slot
@@ -1731,7 +1734,7 @@ void InitMarkerInput ()
 
 	//got a free slot.  start inputting marker message
 
-	Marker_input[0]=0;
+	Marker_input.front() = 0;
 	Marker_index=0;
 	key_toggle_repeat(1);
 }

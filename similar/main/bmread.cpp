@@ -24,6 +24,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
  *
  */
 
+#include "dxxsconf.h"
 #include <algorithm>
 #include <string>
 #include <stdio.h>
@@ -31,6 +32,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
+#include <inttypes.h>
 
 #include "pstypes.h"
 #include "gr.h"
@@ -76,6 +78,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include "partial_range.h"
 #include "d_enumerate.h"
 #include "d_range.h"
+#include "d_zip.h"
 
 using std::min;
 
@@ -180,8 +183,8 @@ namespace {
 //	For the sake of LINT, defining prototypes to module's functions
 #if defined(DXX_BUILD_DESCENT_I)
 static void bm_read_sound(char *&arg, int skip, int pc_shareware);
-static void bm_read_robot_ai(char *&arg, int skip);
-static void bm_read_robot(char *&arg, int skip);
+static void bm_read_robot_ai(d_robot_info_array &Robot_info, char *&arg, int skip);
+static void bm_read_robot(d_level_shared_robot_info_state &LevelSharedRobotInfoState, char *&arg, int skip);
 static void bm_read_object(char *&arg, int skip);
 static void bm_read_player_ship(char *&arg, int skip);
 static void bm_read_some_file(d_vclip_array &Vclip, const std::string &dest_bm, char *&arg, int skip);
@@ -190,12 +193,14 @@ static void bm_read_powerup(char *&arg, int unused_flag);
 static void bm_read_hostage(char *&arg);
 static void verify_textures();
 #elif defined(DXX_BUILD_DESCENT_II)
+#if DXX_USE_EDITOR
 static void bm_read_alias(void);
+#endif
 static void bm_read_marker(void);
-static void bm_read_robot_ai(int skip);
+static void bm_read_robot_ai(d_robot_info_array &Robot_info, int skip);
 static void bm_read_powerup(int unused_flag);
 static void bm_read_hostage(void);
-static void bm_read_robot(int skip);
+static void bm_read_robot(d_level_shared_robot_info_state &LevelSharedRobotInfoState, int skip);
 static void bm_read_weapon(int skip, int unused_flag);
 static void bm_read_reactor(void);
 static void bm_read_exitmodel(void);
@@ -247,35 +252,33 @@ int compute_average_pixel(grs_bitmap *n)
 	return BM_XRGB(total_red/2, total_green/2, total_blue/2);
 }
 
+namespace {
+
 //---------------------------------------------------------------
 // Loads a bitmap from either the piggy file, a r64 file, or a
 // whatever extension is passed.
 
 static bitmap_index bm_load_sub(const int skip, const char *const filename)
 {
-	bitmap_index bitmap_num;
 	palette_array_t newpal;
 	int iff_error;		//reference parm to avoid warning message
 
-	bitmap_num.index = 0;
-
 	if (skip) {
-		return bitmap_num;
+		return bitmap_index{};
 	}
 
 	std::array<char, 20> fname{};
 #if defined(DXX_BUILD_DESCENT_I)
 	removeext(filename, fname);
 #elif defined(DXX_BUILD_DESCENT_II)
-	struct splitpath_t path;
-	d_splitpath(  filename, &path);
+	const auto path = d_splitpath(filename);
 	if (path.base_end - path.base_start >= fname.size())
 		Error("File <%s> - bitmap error, filename too long", filename);
 	memcpy(fname.data(), path.base_start, path.base_end - path.base_start);
 #endif
 
-	bitmap_num = piggy_find_bitmap(fname.data());
-	if (bitmap_num.index)	{
+	if (const auto bitmap_num = piggy_find_bitmap(fname); bitmap_num != bitmap_index{})
+	{
 		return bitmap_num;
 	}
 
@@ -290,24 +293,20 @@ static bitmap_index bm_load_sub(const int skip, const char *const filename)
 #if !DXX_USE_OGL
 	n.avg_color = compute_average_pixel(&n);
 #endif
-
-	bitmap_num = piggy_register_bitmap(n, fname.data(), 0);
-	return bitmap_num;
+	return piggy_register_bitmap(n, fname, 0);
 }
 
 static void ab_load(int skip, const char * filename, std::array<bitmap_index, MAX_BITMAPS_PER_BRUSH> &bmp, unsigned *nframes )
 {
-	bitmap_index bi;
 	int iff_error;		//reference parm to avoid warning message
 	palette_array_t newpal;
-	std::array<char, 24> tempname;
 
 	if (skip) {
 		Assert( bogus_bitmap_initialized != 0 );
 #if defined(DXX_BUILD_DESCENT_I)
 		bmp[0] = piggy_register_bitmap(bogus_bitmap, "bogus", 0);
 #elif defined(DXX_BUILD_DESCENT_II)
-		bmp[0].index = 0;		//index of bogus bitmap==0 (I think)		//&bogus_bitmap;
+		bmp[0] = {};		//index of bogus bitmap==0 (I think)		//&bogus_bitmap;
 #endif
 		*nframes = 1;
 		return;
@@ -318,20 +317,20 @@ static void ab_load(int skip, const char * filename, std::array<bitmap_index, MA
 	std::array<char, 20> fname;
 	removeext(filename, fname);
 #elif defined(DXX_BUILD_DESCENT_II)
-	struct splitpath_t path;
-	d_splitpath( filename, &path);
+	const auto path = d_splitpath(filename);
 #endif
 
 	{
 	unsigned i;
 	for (i=0; i<MAX_BITMAPS_PER_BRUSH; i++ )	{
+		std::array<char, 24> tempname;
 #if defined(DXX_BUILD_DESCENT_I)
-		snprintf(tempname.data(), tempname.size(), "%.16s#%d", fname.data(), i);
+		const auto len = snprintf(tempname.data(), tempname.size(), "%.16s#%d", fname.data(), i);
 #elif defined(DXX_BUILD_DESCENT_II)
-		snprintf(tempname.data(), tempname.size(), "%.*s#%d", DXX_ptrdiff_cast_int(path.base_end - path.base_start), path.base_start, i);
+		const auto len = snprintf(tempname.data(), tempname.size(), "%.*s#%d", DXX_ptrdiff_cast_int(path.base_end - path.base_start), path.base_start, i);
 #endif
-		bi = piggy_find_bitmap(tempname.data());
-		if ( !bi.index )
+		const auto bi = piggy_find_bitmap(std::span<const char>(tempname.data(), len));
+		if (bi == bitmap_index{})
 			break;
 		bmp[i] = bi;
 	}
@@ -358,6 +357,7 @@ static void ab_load(int skip, const char * filename, std::array<bitmap_index, MA
 #endif
 	range_for (const uint_fast32_t i, xrange(nf))
 	{
+		std::array<char, 24> tempname;
 		cf_assert(i < bm.size());
 #if defined(DXX_BUILD_DESCENT_I)
 		snprintf(tempname.data(), tempname.size(), "%s#%" PRIuFAST32, fname.data(), i);
@@ -368,19 +368,19 @@ static void ab_load(int skip, const char * filename, std::array<bitmap_index, MA
 #if !DXX_USE_OGL
 		bm[i]->avg_color = compute_average_pixel(bm[i].get());
 #endif
-		bmp[i] = piggy_register_bitmap(*bm[i].get(), tempname.data(), 0);
+		bmp[i] = piggy_register_bitmap(*bm[i].get(), tempname, 0);
 	}
 }
 
+}
+
 int ds_load(int skip, const char * filename )	{
-	int i;
-	digi_sound n;
 	char rawname[100];
 
 	if (skip) {
 		// We tell piggy_register_sound it's in the pig file, when in actual fact it's in no file
 		// This just tells piggy_close not to attempt to free it
-		return piggy_register_sound( &bogus_sound, "bogus", 1 );
+		return piggy_register_sound(bogus_sound, "bogus");
 	}
 
 	std::array<char, 20> fname;
@@ -388,27 +388,28 @@ int ds_load(int skip, const char * filename )	{
 #if defined(DXX_BUILD_DESCENT_I)
 	snprintf(rawname, sizeof(rawname), "Sounds/%s.raw", fname.data());
 #elif defined(DXX_BUILD_DESCENT_II)
-	snprintf(rawname, sizeof(rawname), "Sounds/%s.%s", fname.data(), (GameArg.SndDigiSampleRate==SAMPLE_RATE_22K) ? "r22" : "raw");
+	snprintf(rawname, sizeof(rawname), "Sounds/%s.r%s", fname.data(), (GameArg.SndDigiSampleRate == sound_sample_rate::_22k) ? "22" : "aw");
 #endif
 
-	i = piggy_find_sound(fname.data());
+	const auto i = piggy_find_sound(fname);
 	if (i!=255)	{
 		return i;
 	}
 	if (auto cfp = PHYSFSX_openReadBuffered(rawname).first)
 	{
+		digi_sound n;
 		n.length	= PHYSFS_fileLength( cfp );
-		MALLOC( n.data, ubyte, n.length );
-		PHYSFS_read( cfp, n.data, 1, n.length );
+		n.data = digi_sound::allocated_data{std::make_unique<uint8_t[]>(n.length), game_sound_offset{}};
+		PHYSFS_read(cfp, n.data.get(), 1, n.length);
 		n.freq = 11025;
+		return piggy_register_sound(n, fname);
 	} else {
 		return 255;
 	}
-	i = piggy_register_sound(&n, fname.data(), 0);
-	return i;
 }
 }
 
+namespace dcx {
 namespace {
 
 //parse a float
@@ -427,6 +428,7 @@ static int get_int()
 
 	xarg = strtok( NULL, space_tab );
 	return atoi( xarg );
+}
 }
 }
 
@@ -463,11 +465,12 @@ static int get_texture(char *name)
 
 #define LINEBUF_SIZE 600
 
+#if defined(DXX_BUILD_DESCENT_I) || (defined(DXX_BUILD_DESCENT_II) && DXX_USE_EDITOR)
 //-----------------------------------------------------------------
 // Initializes all properties and bitmaps from BITMAPS.TBL file.
 // This is called when the editor is IN.
 // If no editor, properties_read_cmp() is called.
-int gamedata_read_tbl(d_vclip_array &Vclip, int pc_shareware)
+int gamedata_read_tbl(d_level_shared_robot_info_state &LevelSharedRobotInfoState, d_vclip_array &Vclip, int pc_shareware)
 {
 	auto &Effects = LevelUniqueEffectsClipState.Effects;
 	auto &TmapInfo = LevelUniqueTmapInfoState.TmapInfo;
@@ -477,7 +480,7 @@ int gamedata_read_tbl(d_vclip_array &Vclip, int pc_shareware)
 #if defined(DXX_BUILD_DESCENT_I)
 	std::string dest_bm;
 	ObjType[0] = OL_PLAYER;
-	ObjId[0] = 0;
+	ObjId[0] = {};
 	Num_total_object_types = 1;
 #elif defined(DXX_BUILD_DESCENT_II)
 	// Open BITMAPS.TBL for reading.
@@ -513,7 +516,7 @@ int gamedata_read_tbl(d_vclip_array &Vclip, int pc_shareware)
 #if defined(DXX_BUILD_DESCENT_II)
 	DXX_MAKE_VAR_UNDEFINED(Reactors);
 	range_for (auto &i, Reactors)
-		i.model_num = -1;
+		i.model_num = polygon_model_index::None;
 #endif
 
 	Num_effects = 0;
@@ -527,8 +530,8 @@ int gamedata_read_tbl(d_vclip_array &Vclip, int pc_shareware)
 		ec.vc.num_frames = -1;		//another mark of being unused
 	}
 
-	for (unsigned i = 0; i < MAX_POLYGON_MODELS; ++i)
-		Dying_modelnums[i] = Dead_modelnums[i] = -1;
+	for (auto &&[dying, dead] : zip(Dying_modelnums, Dead_modelnums))
+		dying = dead = polygon_model_index::None;
 
 	Num_vclips = 0;
 	DXX_MAKE_VAR_UNDEFINED(Vclip);
@@ -563,7 +566,7 @@ int gamedata_read_tbl(d_vclip_array &Vclip, int pc_shareware)
 #endif
 	linenum = 0;
 
-	PHYSFSX_fseek( InfoFile, 0L, SEEK_SET);
+	PHYSFS_seek(InfoFile, 0L);
 
 	PHYSFSX_gets_line_t<LINEBUF_SIZE> inputline;
 	while (PHYSFSX_fgets(inputline, InfoFile)) {
@@ -580,7 +583,8 @@ int gamedata_read_tbl(d_vclip_array &Vclip, int pc_shareware)
 					inputline[l-2] = ' ';				//add one
 					l++;
 				}
-				PHYSFSX_fgets(inputline,InfoFile,l-2);
+				if (!PHYSFSX_fgets(inputline, InfoFile, l - 2))
+					break;
 				linenum++;
 			}
 		}
@@ -728,23 +732,23 @@ int gamedata_read_tbl(d_vclip_array &Vclip, int pc_shareware)
 			else IFTOK("blastable")	 		wall_blastable_flag = get_int() ? WCF_BLASTABLE : 0;
 			else IFTOK("hidden")	 		wall_hidden_flag = get_int() ? WCF_HIDDEN : 0;
 #if defined(DXX_BUILD_DESCENT_I)
-			else IFTOK("$ROBOT_AI") 		bm_read_robot_ai(arg, skip);
+			else IFTOK("$ROBOT_AI") 		bm_read_robot_ai(LevelSharedRobotInfoState.Robot_info, arg, skip);
 
 			else IFTOK("$POWERUP")			{bm_read_powerup(arg, 0);		continue;}
 			else IFTOK("$POWERUP_UNUSED")	{bm_read_powerup(arg, 1);		continue;}
 			else IFTOK("$HOSTAGE")			{bm_read_hostage(arg);		continue;}
-			else IFTOK("$ROBOT")				{bm_read_robot(arg, skip);			continue;}
+			else IFTOK("$ROBOT")				{bm_read_robot(LevelSharedRobotInfoState, arg, skip);			continue;}
 			else IFTOK("$WEAPON")			{bm_read_weapon(arg, skip, 0);		continue;}
 			else IFTOK("$WEAPON_UNUSED")	{bm_read_weapon(arg, skip, 1);		continue;}
 			else IFTOK("$OBJECT")			{bm_read_object(arg, skip);		continue;}
 			else IFTOK("$PLAYER_SHIP")		{bm_read_player_ship(arg, skip);	continue;}
 #elif defined(DXX_BUILD_DESCENT_II)
-			else IFTOK("$ROBOT_AI") 		bm_read_robot_ai(skip);
+			else IFTOK("$ROBOT_AI") 		bm_read_robot_ai(LevelSharedRobotInfoState.Robot_info, skip);
 
 			else IFTOK("$POWERUP")			{bm_read_powerup(0);		continue;}
 			else IFTOK("$POWERUP_UNUSED")	{bm_read_powerup(1);		continue;}
 			else IFTOK("$HOSTAGE")			{bm_read_hostage();		continue;}
-			else IFTOK("$ROBOT")				{bm_read_robot(skip);			continue;}
+			else IFTOK("$ROBOT")				{bm_read_robot(LevelSharedRobotInfoState, skip);			continue;}
 			else IFTOK("$WEAPON")			{bm_read_weapon(skip, 0);		continue;}
 			else IFTOK("$WEAPON_UNUSED")	{bm_read_weapon(skip, 1);		continue;}
 			else IFTOK("$REACTOR")			{bm_read_reactor();		continue;}
@@ -789,7 +793,7 @@ int gamedata_read_tbl(d_vclip_array &Vclip, int pc_shareware)
 	LevelUniqueTmapInfoState.Num_tmaps = tmap_count;
 
 #if defined(DXX_BUILD_DESCENT_II)
-	Textures[NumTextures++].index = 0;		//entry for bogus tmap
+	Textures[NumTextures++] = {};		//entry for bogus tmap
 	InfoFile.reset();
 #endif
 	assert(LevelSharedRobotInfoState.N_robot_types == Num_robot_ais);		//should be one ai info per robot
@@ -800,7 +804,7 @@ int gamedata_read_tbl(d_vclip_array &Vclip, int pc_shareware)
 	for (auto &&[idx, e] : enumerate(Effects))
 	{
 		if ((e.changing_wall_texture != -1 || e.changing_object_texture != object_bitmap_index::None) && e.vc.num_frames == ~0u)
-			Error("EClip %" PRIuFAST32 " referenced (by polygon object?), but not defined", idx);
+			Error("EClip %" DXX_PRI_size_type " referenced (by polygon object?), but not defined", idx);
 	}
 
 #if defined(DXX_BUILD_DESCENT_II)
@@ -820,6 +824,7 @@ int gamedata_read_tbl(d_vclip_array &Vclip, int pc_shareware)
 
 	return 0;
 }
+#endif
 
 namespace {
 
@@ -834,7 +839,7 @@ void verify_textures()
 	const auto Num_tmaps = LevelUniqueTmapInfoState.Num_tmaps;
 	for (uint_fast32_t i = 0; i < Num_tmaps; ++i)
 	{
-		bmp = &GameBitmaps[Textures[i].index];
+		bmp = &GameBitmaps[Textures[i]];
 		if ( (bmp->bm_w!=64)||(bmp->bm_h!=64)||(bmp->bm_rowsize!=64) )	{
 			j++;
 		}
@@ -846,23 +851,29 @@ void verify_textures()
 	for (uint_fast32_t i = 0; i < Num_effects; ++i)
 		if (const auto changing_object_texture = Effects[i].changing_object_texture; changing_object_texture != object_bitmap_index::None)
 		{
-			const auto &o = ObjBitmaps[changing_object_texture].index;
-			if (GameBitmaps[o].bm_w != 64 || GameBitmaps[o].bm_h != 64)
+			const auto o = ObjBitmaps[changing_object_texture];
+			auto &gbo = GameBitmaps[o];
+			if (gbo.bm_w != 64 || gbo.bm_h != 64)
 				Error("Effect %" PRIuFAST32 " is used on object, but is not 64x64",i);
 		}
 #endif
 }
 
-#if defined(DXX_BUILD_DESCENT_II)
+#if defined(DXX_BUILD_DESCENT_II) && DXX_USE_EDITOR
 void bm_read_alias()
 {
-	char *t;
-
 	Assert(Num_aliases < MAX_ALIASES);
+	auto &a = alias_list[Num_aliases];
+	a = {};
 
-	t = strtok( NULL, space_tab );  strncpy(alias_list[Num_aliases].alias_name,t,sizeof(alias_list[Num_aliases].alias_name));
-	t = strtok( NULL, space_tab );  strncpy(alias_list[Num_aliases].file_name,t,sizeof(alias_list[Num_aliases].file_name));
-
+	for (const auto b : {&a.alias_name, &a.file_name})
+	{
+		const auto t = strtok(nullptr, space_tab);
+		if (!t)
+			return;
+		const auto c = std::min(strlen(t), std::size(*b) - 1);
+		std::memcpy(std::data(*b), t, c);
+	}
 	Num_aliases++;
 }
 #endif
@@ -870,6 +881,8 @@ void bm_read_alias()
 }
 
 }
+
+namespace {
 
 static void set_lighting_flag(grs_bitmap &bmp)
 {
@@ -883,6 +896,11 @@ static void set_texture_name(const char *name)
 	REMOVE_DOTS(&TmapInfo[texture_count].filename[0u]);
 }
 
+}
+
+namespace dsx {
+namespace {
+
 #if defined(DXX_BUILD_DESCENT_I)
 static void bm_read_eclip(const std::string &dest_bm, const char *const arg, int skip)
 #elif defined(DXX_BUILD_DESCENT_II)
@@ -891,7 +909,6 @@ static void bm_read_eclip(int skip)
 {
 	auto &Effects = LevelUniqueEffectsClipState.Effects;
 	auto &TmapInfo = LevelUniqueTmapInfoState.TmapInfo;
-	bitmap_index bitmap;
 
 	assert(clip_num < Effects.size());
 
@@ -920,7 +937,7 @@ static void bm_read_eclip(int skip)
 			Assert(texture_count < MAX_TEXTURES);
 			NumTextures = texture_count;
 		}
-		else if (Textures[i].index == 0)		//was found, but registered out
+		else if (Textures[i] == bitmap_index{})		//was found, but registered out
 			Textures[i] = bm_load_sub(skip, dest_bm);
 		dest_bm_num = i;
 	}
@@ -928,7 +945,7 @@ static void bm_read_eclip(int skip)
 
 	if (!abm_flag)
 	{
-		bitmap = bm_load_sub(skip, arg);
+		const auto bitmap = bm_load_sub(skip, arg);
 
 		Effects[clip_num].vc.play_time = fl2f(play_time);
 		Effects[clip_num].vc.num_frames = frames;
@@ -936,7 +953,7 @@ static void bm_read_eclip(int skip)
 
 		Assert(clip_count < frames);
 		Effects[clip_num].vc.frames[clip_count] = bitmap;
-		set_lighting_flag(GameBitmaps[bitmap.index]);
+		set_lighting_flag(GameBitmaps[bitmap]);
 
 		Assert(!obj_eclip);		//obj eclips for non-abm files not supported!
 		Assert(crit_flag==0);
@@ -965,7 +982,7 @@ static void bm_read_eclip(int skip)
 		Effects[clip_num].vc.frame_time = Effects[clip_num].vc.play_time/Effects[clip_num].vc.num_frames;
 
 		clip_count = 0;
-		set_lighting_flag(GameBitmaps[bm[clip_count].index]);
+		set_lighting_flag(GameBitmaps[bm[clip_count]]);
 		Effects[clip_num].vc.frames[clip_count] = bm[clip_count];
 
 		if (!obj_eclip && !crit_flag) {
@@ -994,7 +1011,7 @@ static void bm_read_eclip(int skip)
 		//if for an object, Effects_bm_ptrs set in object load
 
 		for(clip_count=1;clip_count < Effects[clip_num].vc.num_frames; clip_count++) {
-			set_lighting_flag(GameBitmaps[bm[clip_count].index]);
+			set_lighting_flag(GameBitmaps[bm[clip_count]]);
 			Effects[clip_num].vc.frames[clip_count] = bm[clip_count];
 		}
 
@@ -1054,11 +1071,10 @@ static void bm_read_gauges(const char *const arg, int skip)
 static void bm_read_gauges(int skip)
 #endif
 {
-	bitmap_index bitmap;
 	unsigned i, num_abm_frames;
 
 	if (!abm_flag)	{
-		bitmap = bm_load_sub(skip, arg);
+		const auto bitmap = bm_load_sub(skip, arg);
 		Assert(clip_count < MAX_GAUGE_BMS);
 		Gauges[clip_count] = bitmap;
 		clip_count++;
@@ -1079,11 +1095,10 @@ static void bm_read_wclip(char *const arg, int skip)
 #elif defined(DXX_BUILD_DESCENT_II)
 static void bm_read_gauges_hires()
 {
-	bitmap_index bitmap;
 	unsigned i, num_abm_frames;
 
 	if (!abm_flag)	{
-		bitmap = bm_load_sub(0, arg);
+		const auto bitmap = bm_load_sub(0, arg);
 		Assert(clip_count < MAX_GAUGE_BMS);
 		Gauges_hires[clip_count] = bitmap;
 		clip_count++;
@@ -1104,14 +1119,13 @@ static void bm_read_wclip(int skip)
 {
 	auto &TmapInfo = LevelUniqueTmapInfoState.TmapInfo;
 	auto &WallAnims = GameSharedState.WallAnims;
-	bitmap_index bitmap;
 	Assert(clip_num < MAX_WALL_ANIMS);
 
 	auto &wa = WallAnims[clip_num];
 	wa.flags = wall_explodes_flag | wall_blastable_flag | wall_hidden_flag | tmap1_flag;
 
 	if (!abm_flag)	{
-		bitmap = bm_load_sub(skip, arg);
+		const auto bitmap = bm_load_sub(skip, arg);
 		if (wa.num_frames != wclip_frames_none && clip_count == 0)
 			Error( "Wall Clip %d is already used!", clip_num );
 		wa.play_time = fl2f(play_time);
@@ -1122,7 +1136,7 @@ static void bm_read_wclip(int skip)
 		wa.open_sound = wall_open_sound;
 		wa.close_sound = wall_close_sound;
 		Textures[texture_count] = bitmap;
-		set_lighting_flag(GameBitmaps[bitmap.index]);
+		set_lighting_flag(GameBitmaps[bitmap]);
 		set_texture_name( arg );
 		Assert(texture_count < MAX_TEXTURES);
 		texture_count++;
@@ -1149,11 +1163,11 @@ static void bm_read_wclip(int skip)
 
 		if (clip_num >= Num_wall_anims) Num_wall_anims = clip_num+1;
 
-		set_lighting_flag(GameBitmaps[bm[clip_count].index]);
+		set_lighting_flag(GameBitmaps[bm[clip_count]]);
 
 		for (clip_count=0;clip_count < wa.num_frames; clip_count++)	{
 			Textures[texture_count] = bm[clip_count];
-			set_lighting_flag(GameBitmaps[bm[clip_count].index]);
+			set_lighting_flag(GameBitmaps[bm[clip_count]]);
 			wa.frames[clip_count] = texture_count;
 			REMOVE_DOTS(arg);
 			snprintf(&TmapInfo[texture_count].filename[0u], TmapInfo[texture_count].filename.size(), "%s#%d", arg, clip_count);
@@ -1164,15 +1178,12 @@ static void bm_read_wclip(int skip)
 	}
 }
 
-namespace dsx {
-
 #if defined(DXX_BUILD_DESCENT_I)
 static void bm_read_vclip(d_vclip_array &Vclip, const char *const arg, int skip)
 #elif defined(DXX_BUILD_DESCENT_II)
 static void bm_read_vclip(d_vclip_array &Vclip, int skip)
 #endif
 {
-	bitmap_index bi;
 	assert(clip_num < Vclip.size());
 
 #if defined(DXX_BUILD_DESCENT_II)
@@ -1183,13 +1194,13 @@ static void bm_read_vclip(d_vclip_array &Vclip, int skip)
 	if (!abm_flag)	{
 		if (Vclip[clip_num].num_frames != ~0u && clip_count == 0)
 			Error( "Vclip %d is already used!", clip_num );
-		bi = bm_load_sub(skip, arg);
+		const auto bi = bm_load_sub(skip, arg);
 		Vclip[clip_num].play_time = fl2f(play_time);
 		Vclip[clip_num].num_frames = frames;
 		Vclip[clip_num].frame_time = fl2f(play_time)/frames;
 		Vclip[clip_num].light_value = fl2f(vlighting);
 		Vclip[clip_num].sound_num = sound_num;
-		set_lighting_flag(GameBitmaps[bi.index]);
+		set_lighting_flag(GameBitmaps[bi]);
 		Assert(clip_count < frames);
 		Vclip[clip_num].frames[clip_count++] = bi;
 		if (rod_flag) {
@@ -1213,16 +1224,21 @@ static void bm_read_vclip(d_vclip_array &Vclip, int skip)
 		Vclip[clip_num].frame_time = fl2f(play_time)/Vclip[clip_num].num_frames;
 		Vclip[clip_num].light_value = fl2f(vlighting);
 		Vclip[clip_num].sound_num = sound_num;
-		set_lighting_flag(GameBitmaps[bm[clip_count].index]);
+		set_lighting_flag(GameBitmaps[bm[clip_count]]);
 
 		for (clip_count=0;clip_count < Vclip[clip_num].num_frames; clip_count++) {
-			set_lighting_flag(GameBitmaps[bm[clip_count].index]);
+			set_lighting_flag(GameBitmaps[bm[clip_count]]);
 			Vclip[clip_num].frames[clip_count] = bm[clip_count];
 		}
 	}
 }
 
 }
+
+}
+
+namespace dcx {
+namespace {
 
 // ------------------------------------------------------------------------------
 static void get4fix(enumerated_array<fix, NDL, Difficulty_level_type> &fixp)
@@ -1264,8 +1280,18 @@ static void adjust_field_of_view(enumerated_array<fix, NDL, Difficulty_level_typ
 	}
 }
 
-namespace dsx {
+static polygon_simpler_model_index build_polygon_simpler_model_index_from_polygon_model_index(const polygon_model_index i)
+{
+	const auto ii = underlying_value(i) + 1;
+	if (ii > MAX_POLYGON_MODELS)
+		return polygon_simpler_model_index::None;
+	return static_cast<polygon_simpler_model_index>(ii);
+}
 
+}
+}
+
+namespace dsx {
 namespace {
 
 #if defined(DXX_BUILD_DESCENT_I)
@@ -1325,9 +1351,9 @@ void bm_read_sound(int skip)
 
 // ------------------------------------------------------------------------------
 #if defined(DXX_BUILD_DESCENT_I)
-static void bm_read_robot_ai(char *&arg, const int skip)
+static void bm_read_robot_ai(d_robot_info_array &Robot_info, char *&arg, const int skip)
 #elif defined(DXX_BUILD_DESCENT_II)
-void bm_read_robot_ai(const int skip)
+void bm_read_robot_ai(d_robot_info_array &Robot_info, const int skip)
 #endif
 {
 	char			*robotnum_text;
@@ -1336,7 +1362,6 @@ void bm_read_robot_ai(const int skip)
 	robotnum_text = strtok(NULL, space_tab);
 	robotnum = atoi(robotnum_text);
 	Assert(robotnum < MAX_ROBOT_TYPES);
-	auto &Robot_info = LevelSharedRobotInfoState.Robot_info;
 	auto &robptr = Robot_info[robotnum];
 
 	Assert(robotnum == Num_robot_ais);		//make sure valid number
@@ -1409,7 +1434,8 @@ static grs_bitmap *load_polymodel_bitmap(int skip, const char *name)
 		auto &ob = ObjBitmaps[oi];
 		ob = loaded_value;
 #if defined(DXX_BUILD_DESCENT_II)
-		if (GameBitmaps[ob.index].bm_w != 64 || GameBitmaps[ob.index].bm_h != 64)
+		auto &gbo = GameBitmaps[ob];
+		if (gbo.bm_w != 64 || gbo.bm_h != 64)
 			Error("Bitmap <%s> is not 64x64",name);
 #endif
 		ObjBitmapPtrs[N_ObjBitmapPtrs++] = oi;
@@ -1418,7 +1444,7 @@ static grs_bitmap *load_polymodel_bitmap(int skip, const char *name)
 		assert(N_ObjBitmaps < ObjBitmaps.size());
 		assert(N_ObjBitmapPtrs < ObjBitmapPtrs.size());
 #endif
-		return &GameBitmaps[ob.index];
+		return &GameBitmaps[ob];
 	}
 }
 
@@ -1426,9 +1452,9 @@ static grs_bitmap *load_polymodel_bitmap(int skip, const char *name)
 
 // ------------------------------------------------------------------------------
 #if defined(DXX_BUILD_DESCENT_I)
-static void bm_read_robot(char *&arg, int skip)
+static void bm_read_robot(d_level_shared_robot_info_state &LevelSharedRobotInfoState, char *&arg, int skip)
 #elif defined(DXX_BUILD_DESCENT_II)
-void bm_read_robot(int skip)
+void bm_read_robot(d_level_shared_robot_info_state &LevelSharedRobotInfoState, int skip)
 #endif
 {
 	char			*model_name[MAX_MODEL_VARIANTS];
@@ -1467,7 +1493,7 @@ void bm_read_robot(int skip)
 	auto &Robot_info = LevelSharedRobotInfoState.Robot_info;
 	if (skip) {
 		auto &ri = Robot_info[LevelSharedRobotInfoState.N_robot_types++];
-		ri.model_num = -1;
+		ri.model_num = polygon_model_index::None;
 #if defined(DXX_BUILD_DESCENT_I)
 		Num_total_object_types++;
 		clear_to_end_of_line(arg);
@@ -1635,23 +1661,20 @@ void bm_read_robot(int skip)
 	auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
 	for (i=0;i<n_models;i++) {
 		int n_textures;
-		int model_num,last_model_num=0;
 
 		n_textures = first_bitmap_num[i+1] - first_bitmap_num[i];
 
-		model_num = load_polygon_model(model_name[i],n_textures,first_bitmap_num[i], (i == 0) ? &current_robot_info : nullptr);
+		const auto model_num = load_polygon_model(model_name[i], n_textures, first_bitmap_num[i], (i == 0) ? &current_robot_info : nullptr);
 
 		if (i==0)
 			current_robot_info.model_num = model_num;
 		else
-			Polygon_models[last_model_num].simpler_model = model_num+1;
-
-		last_model_num = model_num;
+			Polygon_models.front().simpler_model = build_polygon_simpler_model_index_from_polygon_model_index(model_num);
 	}
 
 #if defined(DXX_BUILD_DESCENT_I)
 	ObjType[Num_total_object_types] = OL_ROBOT;
-	ObjId[Num_total_object_types] = LevelSharedRobotInfoState.N_robot_types;
+	ObjId[Num_total_object_types] = static_cast<polygon_model_index>(LevelSharedRobotInfoState.N_robot_types);
 #elif defined(DXX_BUILD_DESCENT_II)
 	if ((glow > i2f(15)) || (glow < 0) || (glow != 0 && glow < 0x1000)) {
 		Int3();
@@ -1726,7 +1749,6 @@ void bm_read_reactor(void)
 	char *model_name, *model_name_dead=NULL;
 	int first_bitmap_num, first_bitmap_num_dead=0, n_normal_bitmaps;
 	char *equal_ptr;
-	short model_num;
 	fix	lighting = F1_0/2;		// Default
 #if defined(DXX_BUILD_DESCENT_I)
 	int type = -1;
@@ -1796,7 +1818,7 @@ void bm_read_reactor(void)
 	else
 		n_normal_bitmaps = N_ObjBitmapPtrs-first_bitmap_num;
 
-	model_num = load_polygon_model(model_name,n_normal_bitmaps,first_bitmap_num,NULL);
+	const auto model_num = load_polygon_model(model_name, n_normal_bitmaps, first_bitmap_num, nullptr);
 
 #if defined(DXX_BUILD_DESCENT_I)
 	if (type == OL_CONTROL_CENTER)
@@ -1805,7 +1827,7 @@ void bm_read_reactor(void)
 	if ( model_name_dead )
 		Dead_modelnums[model_num]  = load_polygon_model(model_name_dead,N_ObjBitmapPtrs-first_bitmap_num_dead,first_bitmap_num_dead,NULL);
 	else
-		Dead_modelnums[model_num] = -1;
+		Dead_modelnums[model_num] = polygon_model_index::None;
 
 #if defined(DXX_BUILD_DESCENT_I)
 	if (type == -1)
@@ -1872,7 +1894,6 @@ void bm_read_exitmodel()
 	char *model_name, *model_name_dead=NULL;
 	int first_bitmap_num=0, first_bitmap_num_dead=0, n_normal_bitmaps;
 	char *equal_ptr;
-	short model_num;
 
 	model_name = strtok( NULL, space_tab );
 
@@ -1908,12 +1929,12 @@ void bm_read_exitmodel()
 	else
 		n_normal_bitmaps = N_ObjBitmapPtrs-first_bitmap_num;
 
-	model_num = load_polygon_model(model_name,n_normal_bitmaps,first_bitmap_num,NULL);
+	const auto model_num = load_polygon_model(model_name, n_normal_bitmaps, first_bitmap_num, nullptr);
 
 	if ( model_name_dead )
 		Dead_modelnums[model_num]  = load_polygon_model(model_name_dead,N_ObjBitmapPtrs-first_bitmap_num_dead,first_bitmap_num_dead,NULL);
 	else
-		Dead_modelnums[model_num] = -1;
+		Dead_modelnums[model_num] = polygon_model_index::None;
 
 	exit_modelnum = model_num;
 	destroyed_exit_modelnum = Dead_modelnums[model_num];
@@ -2024,25 +2045,14 @@ void bm_read_player_ship(void)
 	auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
 	for (i=0;i<n_models;i++) {
 		int n_textures;
-		int model_num,last_model_num=0;
 
 		n_textures = first_bitmap_num[i+1] - first_bitmap_num[i];
-
-#if defined(DXX_BUILD_DESCENT_I)
-		robot_info *pri = NULL;
-		if (i == 0)
-			pri = &ri;
-		model_num = load_polygon_model(model_name[i],n_textures,first_bitmap_num[i],pri);
-#elif defined(DXX_BUILD_DESCENT_II)
-		model_num = load_polygon_model(model_name[i],n_textures,first_bitmap_num[i],(i==0) ? &ri : nullptr);
-#endif
+		const auto model_num = load_polygon_model(model_name[i], n_textures, first_bitmap_num[i], (i == 0) ? &ri : nullptr);
 
 		if (i==0)
 			Player_ship->model_num = model_num;
 		else
-			Polygon_models[last_model_num].simpler_model = model_num+1;
-
-		last_model_num = model_num;
+			Polygon_models.front().simpler_model = build_polygon_simpler_model_index_from_polygon_model_index(model_num);
 	}
 
 	if ( model_name_dying ) {
@@ -2055,28 +2065,38 @@ void bm_read_player_ship(void)
 	//calc player gun positions
 
 	{
-		polymodel *pm;
-		robot_info *r;
-		vms_vector pnt;
-		int mn;				//submodel number
-		int gun_num;
+		const auto &r = ri;
+		const auto &pm = Polygon_models[Player_ship->model_num];
 
-		r = &ri;
-		pm = &Polygon_models[Player_ship->model_num];
-
-		for (gun_num=0;gun_num<r->n_guns;gun_num++) {
-
-			pnt = r->gun_points[gun_num];
-			mn = r->gun_submodels[gun_num];
-
+		/* Binding to the zip iterator produces references.  For r.gun_points
+		 * and r.gun_submodels, a mutable local is desired instead.
+		 *
+		 * If there are no submodels, copy directly from `r.gun_points` to
+		 * `plr_gun_point` (bound to an element of `Player_ship->gun_points`).
+		 *
+		 * If there are submodels:
+		 * - Copy the submodel index into a local `mn`
+		 * - Copy the r.gun_points vector into a local `pnt`
+		 * - Redirect `ppnt` to the local.
+		 * - Update the local as needed from the polygon models.
+		 * - Copy that local to `plr_gun_point`.
+		 *
+		 * This minimizes unnecessary copying.
+		 */
+		for (auto &&[rpnt, rmn, plr_gun_point] : zip(partial_range(r.gun_points, r.n_guns), r.gun_submodels, Player_ship->gun_points))
+		{
+			auto ppnt = &rpnt;
+			/* Create a local copy to be modified by the `while` loop. */
+			vms_vector pnt;
+			if (auto mn = rmn)
+			{
 			//instance up the tree for this gun
-			while (mn != 0) {
-				vm_vec_add2(pnt,pm->submodel_offsets[mn]);
-				mn = pm->submodel_parents[mn];
+				pnt = rpnt;
+				ppnt = &pnt;
+				for (; mn && mn < std::size(pm.submodel_offsets); mn = pm.submodel_parents[mn])
+					vm_vec_add2(pnt, pm.submodel_offsets[mn]);
 			}
-
-			Player_ship->gun_points[gun_num] = pnt;
-
+			plr_gun_point = *ppnt;
 		}
 	}
 }
@@ -2095,10 +2115,10 @@ void bm_read_some_file(d_vclip_array &Vclip, int skip)
 		break;
 #endif
 	case bm_type::cockpit:	{
-		bitmap_index bitmap;
-		bitmap = bm_load_sub(skip, arg);
-		Assert( Num_cockpits < N_COCKPIT_BITMAPS );
-		cockpit_bitmap[Num_cockpits++] = bitmap;
+		const auto bitmap = bm_load_sub(skip, arg);
+		if (Num_cockpits >= N_COCKPIT_BITMAPS)
+			throw std::runtime_error("too many cockpit bitmaps");
+		cockpit_bitmap[static_cast<cockpit_mode_t>(Num_cockpits++)] = bitmap;
 #if defined(DXX_BUILD_DESCENT_II)
 		return;
 #endif
@@ -2133,8 +2153,7 @@ void bm_read_some_file(d_vclip_array &Vclip, int skip)
 #endif
 		break;
 	case bm_type::textures:			{
-		bitmap_index bitmap;
-		bitmap = bm_load_sub(skip, arg);
+		const auto bitmap = bm_load_sub(skip, arg);
 		Assert(tmap_count < MAX_TEXTURES);
   		tmap_count++;
 		Textures[texture_count] = bitmap;
@@ -2210,9 +2229,9 @@ void bm_read_weapon(int skip, int unused_flag)
 
 	// Initialize weapon array
 	Weapon_info[n].render = WEAPON_RENDER_NONE;		// 0=laser, 1=blob, 2=object
-	Weapon_info[n].bitmap.index = 0;
-	Weapon_info[n].model_num = -1;
-	Weapon_info[n].model_num_inner = -1;
+	Weapon_info[n].bitmap = {};
+	Weapon_info[n].model_num = polygon_model_index::None;
+	Weapon_info[n].model_num_inner = polygon_model_index::None;
 	Weapon_info[n].blob_size = 0x1000;									// size of blob
 	Weapon_info[n].flash_vclip = vclip_none;
 	Weapon_info[n].flash_sound = SOUND_LASER_FIRED;
@@ -2249,9 +2268,9 @@ void bm_read_weapon(int skip, int unused_flag)
 
 	Weapon_info[n].po_len_to_width_ratio = F1_0*10;
 
-	Weapon_info[n].picture.index = 0;
+	Weapon_info[n].picture = {};
 #if defined(DXX_BUILD_DESCENT_II)
-	Weapon_info[n].hires_picture.index = 0;
+	Weapon_info[n].hires_picture = {};
 #endif
 	Weapon_info[n].homing_flag = 0;
 
@@ -2291,7 +2310,7 @@ void bm_read_weapon(int skip, int unused_flag)
 
 			} else if (!d_stricmp( arg, "weapon_vclip" ))	{
 				// Set vclip to play for this weapon.
-				Weapon_info[n].bitmap.index = 0;
+				Weapon_info[n].bitmap = {};
 				Weapon_info[n].render = WEAPON_RENDER_VCLIP;
 				Weapon_info[n].weapon_vclip = atoi(equal_ptr);
 
@@ -2440,20 +2459,17 @@ void bm_read_weapon(int skip, int unused_flag)
 	auto &Polygon_models = LevelSharedPolygonModelState.Polygon_models;
 	for (i=0;i<n_models;i++) {
 		int n_textures;
-		int model_num,last_model_num=0;
 
 		n_textures = first_bitmap_num[i+1] - first_bitmap_num[i];
 
-		model_num = load_polygon_model(model_name[i],n_textures,first_bitmap_num[i],NULL);
+		const auto model_num = load_polygon_model(model_name[i],n_textures,first_bitmap_num[i],NULL);
 
 		if (i==0) {
 			Weapon_info[n].render = WEAPON_RENDER_POLYMODEL;
 			Weapon_info[n].model_num = model_num;
 		}
 		else
-			Polygon_models[last_model_num].simpler_model = model_num+1;
-
-		last_model_num = model_num;
+			Polygon_models.front().simpler_model = build_polygon_simpler_model_index_from_polygon_model_index(model_num);
 	}
 
 	if ( pof_file_inner )	{
@@ -2471,12 +2487,11 @@ void bm_read_powerup(char *&arg, int unused_flag)
 void bm_read_powerup(int unused_flag)
 #endif
 {
-	int n;
 	char 	*equal_ptr;
 
 	Assert(N_powerup_types < MAX_POWERUP_TYPES);
 
-	n = N_powerup_types;
+	const auto n = N_powerup_types;
 	N_powerup_types++;
 
 	if (unused_flag) {
@@ -2538,7 +2553,7 @@ void bm_read_powerup(int unused_flag)
 	}
 #if defined(DXX_BUILD_DESCENT_I)
 	ObjType[Num_total_object_types] = OL_POWERUP;
-	ObjId[Num_total_object_types] = n;
+	ObjId[Num_total_object_types] = static_cast<polygon_model_index>(n);
 	Num_total_object_types++;
 #endif
 }
@@ -2549,12 +2564,11 @@ void bm_read_hostage(char *&arg)
 void bm_read_hostage()
 #endif
 {
-	int n;
 	char 	*equal_ptr;
 
 	Assert(N_hostage_types < MAX_HOSTAGE_TYPES);
 
-	n = N_hostage_types;
+	const auto n = N_hostage_types;
 	N_hostage_types++;
 
 	// Process arguments
@@ -2585,7 +2599,7 @@ void bm_read_hostage()
 	}
 #if defined(DXX_BUILD_DESCENT_I)
 	ObjType[Num_total_object_types] = OL_HOSTAGE;
-	ObjId[Num_total_object_types] = n;
+	ObjId[Num_total_object_types] = static_cast<polygon_model_index>(n);
 	Num_total_object_types++;
 #endif
 }

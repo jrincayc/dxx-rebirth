@@ -25,6 +25,7 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 
 #pragma once
 
+#include <compare>
 #include <physfs.h>
 #include <type_traits>
 #include "pstypes.h"
@@ -33,7 +34,6 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include "dxxsconf.h"
 #include "dsx-ns.h"
 
-#ifdef __cplusplus
 #include <cassert>
 #include <cstdint>
 #include <stdexcept>
@@ -42,7 +42,6 @@ COPYRIGHT 1993-1999 PARALLAX SOFTWARE CORPORATION.  ALL RIGHTS RESERVED.
 #include "valptridx.h"
 #include "objnum.h"
 #include "pack.h"
-
 
 #ifdef dsx
 namespace dsx {
@@ -122,6 +121,19 @@ enum class station_number : uint8_t
 	None = 0xff,
 };
 
+enum segnum_t : uint16_t
+{
+};
+
+enum class vertnum_t : uint32_t
+{
+};
+
+enum class wallnum_t : uint16_t
+{
+	None = 0xffff,
+};
+
 struct shared_side
 {
 	struct illegal_type;
@@ -131,6 +143,46 @@ struct shared_side
 	wallnum_t wall_num;
 	std::array<vms_vector, 2> normals;  // 2 normals, if quadrilateral, both the same.
 };
+
+enum class sidenum_t : uint8_t
+{
+	WLEFT = 0,
+	WTOP = 1,
+	WRIGHT = 2,
+	WBOTTOM = 3,
+	WBACK = 4,
+	WFRONT = 5
+};
+
+enum class sidemask_t : uint8_t
+{
+	left =	1u << static_cast<uint8_t>(sidenum_t::WLEFT),
+	top =	1u << static_cast<uint8_t>(sidenum_t::WTOP),
+	right =	1u << static_cast<uint8_t>(sidenum_t::WRIGHT),
+	bottom =	1u << static_cast<uint8_t>(sidenum_t::WBOTTOM),
+	back =	1u << static_cast<uint8_t>(sidenum_t::WBACK),
+	front =	1u << static_cast<uint8_t>(sidenum_t::WFRONT),
+};
+
+static constexpr uint8_t operator&(const sidemask_t a, const sidemask_t b)
+{
+	return static_cast<uint8_t>(a) & static_cast<uint8_t>(b);
+}
+
+static constexpr sidemask_t operator~(const sidemask_t a)
+{
+	return static_cast<sidemask_t>(~static_cast<uint8_t>(a));
+}
+
+static constexpr sidemask_t &operator|=(sidemask_t &a, const sidemask_t b)
+{
+	return a = static_cast<sidemask_t>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
+}
+
+static constexpr sidemask_t build_sidemask(const sidenum_t s)
+{
+	return static_cast<sidemask_t>(1u << static_cast<uint8_t>(s));
+}
 
 enum class texture1_value : uint16_t
 {
@@ -232,7 +284,7 @@ struct shared_segment
 	segnum_t   segnum;     // segment number, not sure what it means
 	short   group;      // group number to which the segment belongs.
 #endif
-	enumerated_array<segnum_t, MAX_SIDES_PER_SEGMENT, sidenum_t> children;    // indices of 6 children segments, front, left, top, right, bottom, back
+	per_side_array<segnum_t> children;    // indices of 6 children segments, front, left, top, right, bottom, back
 	enumerated_array<vertnum_t, MAX_VERTICES_PER_SEGMENT, segment_relative_vertnum> verts;    // vertex ids of 4 front and 4 back vertices
 	segment_special special;    // what type of center this is
 	materialization_center_number matcen_num; // which center segment is associated with.
@@ -240,19 +292,19 @@ struct shared_segment
 	/* if DXX_BUILD_DESCENT_II */
 	uint8_t s2_flags;
 	/* endif */
-	enumerated_array<shared_side, MAX_SIDES_PER_SEGMENT, sidenum_t> sides;
+	per_side_array<shared_side> sides;
 };
 
 struct unique_segment
 {
 	objnum_t objects;    // pointer to objects in this segment
 	//      If bit n (1 << n) is set, then side #n in segment has had light subtracted from original (editor-computed) value.
-	uint8_t light_subtracted;
+	sidemask_t light_subtracted;
 	/* if DXX_BUILD_DESCENT_II */
-	uint8_t slide_textures;
+	sidemask_t slide_textures;
 	/* endif */
 	fix     static_light;
-	enumerated_array<unique_side, MAX_SIDES_PER_SEGMENT, sidenum_t> sides;
+	per_side_array<unique_side> sides;
 };
 
 struct segment : unique_segment, shared_segment
@@ -262,23 +314,14 @@ struct segment : unique_segment, shared_segment
 template <typename S, typename U>
 struct susegment
 {
-	using qualified_segment = typename std::conditional<std::is_const<S>::value && std::is_const<U>::value, const segment, segment>::type;
 	S &s;
 	U &u;
-	constexpr susegment(qualified_segment &b) :
-		s(b), u(b)
-	{
-	}
 	constexpr susegment(const susegment &) = default;
 	constexpr susegment(susegment &&) = default;
-	template <typename S2, typename U2, typename std::enable_if<std::is_convertible<S2 &, S &>::value && std::is_convertible<U2 &, U &>::value, int>::type = 0>
-		constexpr susegment(const susegment<S2, U2> &r) :
-			s(r.s), u(r.u)
-	{
-	}
-	template <typename T, typename std::enable_if<std::is_convertible<T &&, qualified_segment &>::value, int>::type = 0>
+	template <typename T>
+		requires(std::is_convertible<T &&, S &>::value && std::is_convertible<T &&, U &>::value)
 		constexpr susegment(T &&t) :
-			susegment(static_cast<qualified_segment &>(t))
+			s(t), u(t)
 	{
 	}
 	operator S &() const
@@ -308,7 +351,7 @@ struct group
 };
 
 #ifdef dsx
-#define Highest_segment_index (Segments.get_count() - 1)
+#define Highest_segment_index static_cast<segnum_t>(Segments.get_count() - 1)
 DXX_VALPTRIDX_DEFINE_GLOBAL_FACTORIES(segment, seg, Segments);
 #endif
 
@@ -353,6 +396,10 @@ struct shared_side::illegal_type : std::runtime_error
 namespace dsx {
 
 #if defined(DXX_BUILD_DESCENT_II)
+enum class delta_light_index : uint16_t
+{
+};
+
 // New stuff, 10/14/95: For shooting out lights and monitors.
 // Light cast upon vert_light vertices in segnum:sidenum by some light
 struct delta_light : prohibit_void_ptr<delta_light>
@@ -365,17 +412,16 @@ struct delta_light : prohibit_void_ptr<delta_light>
 // Light at segnum:sidenum casts light on count sides beginning at index (in array Delta_lights)
 struct dl_index {
 	segnum_t   segnum;
-	uint8_t   sidenum;
+	sidenum_t  sidenum;
 	uint8_t count;
-	uint16_t index;
-	bool operator<(const dl_index &rhs) const
+	delta_light_index index;
+	constexpr std::strong_ordering operator<=>(const dl_index &rhs) const
 	{
-		if (segnum < rhs.segnum)
-			return true;
-		if (segnum > rhs.segnum)
-			return false;
-		return sidenum < rhs.sidenum;
+		if (const auto r = segnum <=> rhs.segnum; r != std::strong_ordering::equal)
+			return r;
+		return sidenum <=> rhs.sidenum;
 	}
+	constexpr bool operator==(const dl_index &) const = default;
 };
 
 struct d_level_shared_destructible_light_state
@@ -611,5 +657,4 @@ struct d_level_shared_segment_state : ::dcx::d_level_shared_segment_state
 extern d_level_shared_segment_state LevelSharedSegmentState;
 
 }
-#endif
 #endif

@@ -163,7 +163,7 @@ static void scores_write(all_scores *scores)
 	RAIIPHYSFS_File fp{PHYSFS_openWrite(SCORES_FILENAME)};
 	if (!fp)
 	{
-		nm_messagebox(menu_title{TXT_WARNING}, 1, TXT_OK, "%s\n'%s'", TXT_UNABLE_TO_OPEN, SCORES_FILENAME);
+		nm_messagebox(menu_title{TXT_WARNING}, {TXT_OK}, "%s\n'%s'", TXT_UNABLE_TO_OPEN, SCORES_FILENAME);
 		return;
 	}
 
@@ -195,7 +195,7 @@ static void scores_fill_struct(stats_info * stats)
 
 	stats->seconds = f2i(plr.time_total) + (plr.hours_total * 3600);
 
-	stats->diff_level = GameUniqueState.Difficulty_level;
+	stats->diff_level = underlying_value(GameUniqueState.Difficulty_level);
 	stats->starting_level = plr.starting_level;
 }
 
@@ -290,7 +290,7 @@ void scores_maybe_add_player()
 	const auto end_score_stats = std::end(scores.stats);
 	/* Find the position at which the player's score should be placed.
 	 */
-	const auto iter_position = std::find_if(begin_score_stats, end_score_stats, predicate);
+	const auto &&iter_position = ranges::find_if(begin_score_stats, end_score_stats, predicate);
 	const auto position = std::distance(begin_score_stats, iter_position);
 	/* If iter_position == end_score_stats, then the player's score does
 	 * not beat any of the existing high scores.  Include a special case
@@ -315,7 +315,7 @@ void scores_maybe_add_player()
 			/* New record, but not a new best score.  Tell the player
 			 * what slot the new record earned.
 			 */
-			nm_messagebox(menu_title{TXT_HIGH_SCORE}, 1, TXT_OK, "%s %s!", TXT_YOU_PLACED, get_placement_slot_string(position));
+			nm_messagebox(menu_title{TXT_HIGH_SCORE}, {TXT_OK}, "%s %s!", TXT_YOU_PLACED, get_placement_slot_string(position));
 		}
 
 		// move everyone down...
@@ -489,7 +489,8 @@ static void scores_draw_item(grs_canvas &canvas, const grs_font &cv_font, const 
 	gr_string(canvas, cv_font, shared_item_context.name, fspacy_y, stats.name);
 	scores_rputs(canvas, cv_font, shared_item_context.score, fspacy_y, stats.score.data());
 
-	gr_string(canvas, cv_font, shared_item_context.difficulty, fspacy_y, MENU_DIFFICULTY_TEXT(stats.diff_level));
+	if (const auto d = build_difficulty_level_from_untrusted(stats.diff_level))
+		gr_string(canvas, cv_font, shared_item_context.difficulty, fspacy_y, MENU_DIFFICULTY_TEXT(*d));
 
 	scores_rputs(canvas, cv_font, shared_item_context.levels, fspacy_y, stats.levels.data());
 	scores_rputs(canvas, cv_font, shared_item_context.time_played, fspacy_y, stats.time_played.data());
@@ -534,7 +535,7 @@ window_event_result scores_menu::event_handler(const d_event &event)
 
 		case EVENT_MOUSE_BUTTON_DOWN:
 		case EVENT_MOUSE_BUTTON_UP:
-			if (event_mouse_get_button(event) == MBTN_LEFT || event_mouse_get_button(event) == MBTN_RIGHT)
+			if (event_mouse_get_button(event) == mbtn::left || event_mouse_get_button(event) == mbtn::right)
 			{
 				return window_event_result::close;
 			}

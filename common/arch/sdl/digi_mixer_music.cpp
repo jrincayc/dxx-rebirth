@@ -12,6 +12,7 @@
  *  -- MD2211 (2006-04-24)
  */
 
+#include <span>
 #include <SDL.h>
 #include <SDL_mixer.h>
 #include <string.h>
@@ -31,20 +32,6 @@ namespace dcx {
 
 namespace {
 
-#if SDL_MIXER_MAJOR_VERSION == 2
-#define DXX_SDL_MIXER_MANAGES_RWOPS	1
-#else
-#define DXX_SDL_MIXER_MANAGES_RWOPS	0
-#endif
-
-#if DXX_SDL_MIXER_MANAGES_RWOPS
-#define	DXX_SDL_MIXER_Mix_LoadMUS_MANAGE_RWOPS	, SDL_TRUE
-#define DXX_SDL_MIXER_Mix_LoadMUS_PASS_RWOPS(rw)
-#else
-#define DXX_SDL_MIXER_Mix_LoadMUS_MANAGE_RWOPS
-#define DXX_SDL_MIXER_Mix_LoadMUS_PASS_RWOPS(rw)	, rw
-#endif
-
 struct Music_delete
 {
 	void operator()(Mix_Music *m) const
@@ -55,39 +42,51 @@ struct Music_delete
 
 class current_music_t : std::unique_ptr<Mix_Music, Music_delete>
 {
-#if !DXX_SDL_MIXER_MANAGES_RWOPS
-	using rwops_pointer = std::unique_ptr<SDL_RWops, RWops_delete>;
-	rwops_pointer m_ops;
-#endif
 	using music_pointer = std::unique_ptr<Mix_Music, Music_delete>;
 public:
-#if DXX_SDL_MIXER_MANAGES_RWOPS
 	using music_pointer::reset;
-#else
-	void reset(
-		Mix_Music *const music = nullptr
-		, SDL_RWops *const rwops = nullptr
-		) noexcept
-	{
-		/* Clear music first in case it needs the old ops
-		 * Clear old ops
-		 * If no new music, clear new ops immediately.  This only
-		 * happens if the new music fails to load.
-		 */
-		this->music_pointer::reset(music);
-		m_ops.reset(rwops);
-		if (!music)
-			m_ops.reset();
-	}
-#endif
+	void reset(SDL_RWops *rw);
 	using music_pointer::operator bool;
 	using music_pointer::get;
 };
 
+void current_music_t::reset(SDL_RWops *const rw)
+{
+	if (!rw)
+	{
+		/* As a special case, exit early if rw is nullptr.  SDL is
+		 * guaranteed to fail in this case, but will set an error message
+		 * when it does so.  The error message about a nullptr SDL_RWops
+		 * will replace any prior error message, which might have been more
+		 * useful.
+		 */
+		reset();
+		return;
+	}
+	reset(Mix_LoadMUSType_RW(rw, MUS_NONE, SDL_TRUE));
+	if constexpr (SDL_MIXER_MAJOR_VERSION == 1)
+	{
+		/* In SDL_mixer-1, setting freesrc==SDL_TRUE only transfers ownership
+		 * of the RWops structure on success.  On failure, the structure is
+		 * still owned by the caller, and must be freed here.
+		 *
+		 * In SDL_mixer-2, setting freesrc==SDL_TRUE always transfers ownership
+		 * of the RWops structure.  On failure, SDL_mixer-2 will free the RWops
+		 * before returning, so the structure must not be freed here.
+		 */
+		if (!*this)
+			SDL_RWclose(rw);
+	}
 }
 
 static current_music_t current_music;
 static std::vector<uint8_t> current_music_hndlbuf;
+
+static void mix_set_music_type_sdlmixer(int loop, void (*const hook_finished_track)())
+{
+	Mix_PlayMusic(current_music.get(), (loop ? -1 : 1));
+	Mix_HookMusicFinished(hook_finished_track);
+}
 
 #if DXX_USE_ADLMIDI
 static ADL_MIDIPlayer_t current_adlmidi;
@@ -114,6 +113,14 @@ static ADL_MIDIPlayer *get_adlmidi()
 }
 
 static void mix_adlmidi(void *udata, Uint8 *stream, int len);
+
+static void mix_set_music_type_adl(int loop, void (*const hook_finished_track)())
+{
+	ADL_MIDIPlayer *adlmidi = get_adlmidi();
+	adl_setLoopEnabled(adlmidi, loop);
+	Mix_HookMusic(&mix_adlmidi, nullptr);
+	Mix_HookMusicFinished(hook_finished_track);
+}
 #endif
 
 enum class CurrentMusicType
@@ -127,101 +134,73 @@ enum class CurrentMusicType
 
 static CurrentMusicType current_music_type = CurrentMusicType::None;
 
-static CurrentMusicType load_mus_data(const uint8_t *data, size_t size);
-static CurrentMusicType load_mus_file(const char *filename);
+static CurrentMusicType load_mus_data(std::span<const uint8_t> data, int loop, void (*const hook_finished_track)());
+static CurrentMusicType load_mus_file(const char *filename, int loop, void (*const hook_finished_track)());
+
+}
 
 /*
  *  Plays a music file from an absolute path or a relative path
  */
 
-int mix_play_file(const char *filename, int loop, void (*hook_finished_track)())
+int mix_play_file(const char *filename, int loop, void (*const entry_hook_finished_track)())
 {
-	std::array<char, PATH_MAX> full_path;
-	const char *fptr;
-	unsigned int bufsize = 0;
-
 	mix_free_music();	// stop and free what we're already playing, if anything
 
-	fptr = strrchr(filename, '.');
-
-	if (fptr == NULL)
-		return 0;
-
+	const auto hook_finished_track = entry_hook_finished_track ? entry_hook_finished_track : mix_free_music;
 	// It's a .hmp!
-	if (!d_stricmp(fptr, ".hmp"))
+	if (const auto fptr = strrchr(filename, '.'); fptr && !d_stricmp(fptr, ".hmp"))
 	{
-		hmp2mid(filename, current_music_hndlbuf);
-		current_music_type = load_mus_data(current_music_hndlbuf.data(), current_music_hndlbuf.size());
+		if (auto &&[v, hoe] = hmp2mid(filename); hoe == hmp_open_error::None)
+		{
+			current_music_hndlbuf = std::move(v);
+			current_music_type = load_mus_data(current_music_hndlbuf, loop, hook_finished_track);
+			if (current_music_type != CurrentMusicType::None)
+				return 1;
+		}
+		else
+			/* hmp2mid printed an error message, so there is no need for another one here */
+			return 0;
 	}
 
 	// try loading music via given filename
-	if (current_music_type == CurrentMusicType::None)
-		current_music_type = load_mus_file(filename);
+	{
+		current_music_type = load_mus_file(filename, loop, hook_finished_track);
+		if (current_music_type != CurrentMusicType::None)
+			return 1;
+	}
 
 	// allow the shell convention tilde character to mean the user's home folder
 	// chiefly used for default jukebox level song music referenced in 'descent.m3u' for Mac OS X
-	if (current_music_type == CurrentMusicType::None && *filename == '~')
+	if (*filename == '~')
 	{
 		const auto sep = PHYSFS_getDirSeparator();
 		const auto lensep = strlen(sep);
+		std::array<char, PATH_MAX> full_path;
 		snprintf(full_path.data(), PATH_MAX, "%s%s", PHYSFS_getUserDir(),
 				 &filename[1 + (!strncmp(&filename[1], sep, lensep)
 			? lensep
 			: 0)]);
-		current_music_type = load_mus_file(full_path.data());
+		current_music_type = load_mus_file(full_path.data(), loop, hook_finished_track);
 		if (current_music_type != CurrentMusicType::None)
-			filename = full_path.data();	// used later for possible error reporting
-	}
-
-	// no luck. so it might be in Searchpath. So try to build absolute path
-	if (current_music_type == CurrentMusicType::None)
-	{
-		PHYSFSX_getRealPath(filename, full_path);
-		current_music_type = load_mus_file(full_path.data());
-		if (current_music_type != CurrentMusicType::None)
-			filename = full_path.data();	// used later for possible error reporting
+			return 1;
 	}
 
 	// still nothin'? Let's open via PhysFS in case it's located inside an archive
-	if (current_music_type == CurrentMusicType::None)
 	{
 		if (RAIIPHYSFS_File filehandle{PHYSFS_openRead(filename)})
 		{
-			unsigned len = PHYSFS_fileLength(filehandle);
+			const auto len = PHYSFS_fileLength(filehandle);
 			current_music_hndlbuf.resize(len);
-			bufsize = PHYSFS_read(filehandle, &current_music_hndlbuf[0], sizeof(char), len);
-			current_music_type = load_mus_data(current_music_hndlbuf.data(), bufsize*sizeof(char));
+			const auto bufsize = PHYSFS_read(filehandle, &current_music_hndlbuf[0], sizeof(char), len);
+			current_music_type = load_mus_data(std::span(current_music_hndlbuf).first(bufsize), loop, hook_finished_track);
+			if (current_music_type != CurrentMusicType::None)
+				return 1;
 		}
 	}
 
-	switch (current_music_type)
-	{
-
-#if DXX_USE_ADLMIDI
-	case CurrentMusicType::ADLMIDI:
-	{
-		ADL_MIDIPlayer *adlmidi = get_adlmidi();
-		adl_setLoopEnabled(adlmidi, loop);
-		Mix_HookMusic(&mix_adlmidi, nullptr);
-		Mix_HookMusicFinished(hook_finished_track ? hook_finished_track : mix_free_music);
-		return 1;
-	}
-#endif
-
-	case CurrentMusicType::SDLMixer:
-	{
-		Mix_PlayMusic(current_music.get(), (loop ? -1 : 1));
-		Mix_HookMusicFinished(hook_finished_track ? hook_finished_track : mix_free_music);
-		return 1;
-	}
-
-	default:
-	{
-		con_printf(CON_CRITICAL,"Music %s could not be loaded: %s", filename, Mix_GetError());
-		mix_stop_music();
-	}
-
-	}
+	con_printf(CON_CRITICAL, "Music %s could not be loaded: %s", filename, Mix_GetError());
+	mix_stop_music();
 
 	return 0;
 }
@@ -274,40 +253,52 @@ void mix_pause_resume_music()
 		Mix_PauseMusic();
 }
 
-static CurrentMusicType load_mus_data(const uint8_t *data, size_t size)
+namespace {
+
+static CurrentMusicType load_mus_data(const std::span<const uint8_t> data, int loop, void (*const hook_finished_track)())
 {
-	CurrentMusicType type = CurrentMusicType::None;
 #if DXX_USE_ADLMIDI
 	const auto adlmidi = get_adlmidi();
-	if (adlmidi && adl_openData(adlmidi, data, size) == 0)
-		type = CurrentMusicType::ADLMIDI;
+	if (adlmidi && adl_openData(adlmidi, data.data(), data.size()) == 0)
+	{
+		mix_set_music_type_adl(loop, hook_finished_track);
+		return CurrentMusicType::ADLMIDI;
+	}
 	else
 #endif
 	{
-		const auto rw = SDL_RWFromConstMem(data, size);
-		current_music.reset(Mix_LoadMUS_RW(rw DXX_SDL_MIXER_Mix_LoadMUS_MANAGE_RWOPS) DXX_SDL_MIXER_Mix_LoadMUS_PASS_RWOPS(rw));
+		const auto rw = SDL_RWFromConstMem(data.data(), data.size());
+		current_music.reset(rw);
 		if (current_music)
-			type = CurrentMusicType::SDLMixer;
+		{
+			mix_set_music_type_sdlmixer(loop, hook_finished_track);
+			return CurrentMusicType::SDLMixer;
+		}
 	}
-
-	return type;
+	return CurrentMusicType::None;
 }
 
-static CurrentMusicType load_mus_file(const char *filename)
+static CurrentMusicType load_mus_file(const char *filename, int loop, void (*const hook_finished_track)())
 {
 	CurrentMusicType type = CurrentMusicType::None;
 #if DXX_USE_ADLMIDI
 	const auto adlmidi = get_adlmidi();
 	if (adlmidi && adl_openFile(adlmidi, filename) == 0)
-		type = CurrentMusicType::ADLMIDI;
+	{
+		mix_set_music_type_adl(loop, hook_finished_track);
+		return CurrentMusicType::ADLMIDI;
+	}
 	else
 #endif
 	{
-		current_music.reset(Mix_LoadMUS(filename));
+		const auto rw = SDL_RWFromFile(filename, "rb");
+		current_music.reset(rw);
 		if (current_music)
-			type = CurrentMusicType::SDLMixer;
+		{
+			mix_set_music_type_sdlmixer(loop, hook_finished_track);
+			return CurrentMusicType::SDLMixer;
+		}
 	}
-
 	return type;
 }
 
@@ -335,5 +326,7 @@ static void mix_adlmidi(void *, Uint8 *stream, int len)
 	std::transform(samples, samples + sampleCount, samples, amplify);
 }
 #endif
+
+}
 
 }

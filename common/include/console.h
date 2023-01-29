@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <type_traits>
@@ -36,8 +37,8 @@ constexpr std::integral_constant<std::size_t, 2048> CON_LINE_LENGTH{};
 
 struct console_buffer
 {
-	char line[CON_LINE_LENGTH];
 	int priority;
+	std::array<char, CON_LINE_LENGTH> line;
 };
 
 /* Define to 1 to capture the __FILE__, __LINE__ of callers to
@@ -67,7 +68,7 @@ void con_printf(con_priority_wrapper level, const char *fmt, ...) __attribute_fo
 #ifdef DXX_CONSTANT_TRUE
 #define DXX_CON_PRINTF_CHECK_TRAILING_NEWLINE(F)	\
 	(DXX_CONSTANT_TRUE(sizeof((F)) > 1 && (F)[sizeof((F)) - 2] == '\n') &&	\
-		(DXX_ALWAYS_ERROR_FUNCTION(dxx_trap_trailing_newline, "trailing literal newline on con_printf"), 0)),
+		(DXX_ALWAYS_ERROR_FUNCTION("trailing literal newline on con_printf"), 0)),
 #else
 #define DXX_CON_PRINTF_CHECK_TRAILING_NEWLINE(C)
 #endif

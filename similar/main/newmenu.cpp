@@ -127,7 +127,7 @@ void newmenu_free_background()	{
 	nm_background1.reset();
 }
 
-newmenu_layout::adjusted_citem newmenu_layout::adjusted_citem::create(const partial_range_t<newmenu_item *> items, int citem)
+newmenu_layout::adjusted_citem newmenu_layout::adjusted_citem::create(const ranges::subrange<newmenu_item *> items, int citem)
 {
 	if (citem < 0)
 		citem = 0;
@@ -297,10 +297,10 @@ static void nm_string(grs_canvas &canvas, const grs_font &cv_font, const int w1,
 	{
 		const char *s1 = s;
 		const char *p = nullptr;
-		RAIIdmem<char[]> s2;
+		std::unique_ptr<char[]> s2;
 		if (w1 > 0 && (p = strchr(s, '\t')))
 		{
-			s2.reset(d_strdup(s));
+			s2 = d_strdup(s);
 			s1 = s2.get();
 			*std::next(s2.get(), std::distance(s, p)) = '\0';
 		}
@@ -396,22 +396,25 @@ static void nm_rstring(grs_canvas &canvas, const grs_font &cv_font, int w1, int 
 	gr_string(canvas, cv_font, x - w, y, s, w, h);
 }
 
-static void nm_string_inputbox(grs_canvas &canvas, const grs_font &cv_font, const int w, const int x, const int y, const char *text, const int current)
+static void nm_string_inputbox(grs_canvas &canvas, const grs_font &cv_font, const int w, const int x, const int y, const char *const entry_text, const int current)
 {
-	int w1;
-
+	const auto &&[w1, text] = [](const grs_font &font, const int w, const char *text) -> std::pair<int, const char *> {
 	// even with variable char widths and a box that goes over the whole screen, we maybe never get more than 75 chars on the line
-	if (strlen(text)>75)
-		text+=strlen(text)-75;
-	while( *text )	{
-		w1 = gr_get_string_size(cv_font, text).width;
-		if ( w1 > w-FSPACX(10) )
-			text++;
-		else
-			break;
-	}
-	if ( *text == 0 )
-		w1 = 0;
+		if (const auto l = strlen(text); l > 75)
+			text += l - 75;
+		const auto threshold = w - FSPACX(10);
+		for (;;)
+		{
+			const char c = *text;
+			if (!c)
+				return {0, text};
+			const int w1 = gr_get_string_size(font, text, UINT_MAX).width;
+			if (w1 > threshold)
+				++text;
+			else
+				return {w1, text};
+		}
+	}(cv_font, w, entry_text);
 
 	nm_string_black(canvas, w, x, y, text);
 
@@ -520,7 +523,7 @@ static void strip_end_whitespace( char * text )
 
 }
 
-int newmenu_do2(const menu_title title, const menu_subtitle subtitle, const partial_range_t<newmenu_item *> items, const newmenu_subfunction subfunction, void *const userdata, const int citem, const menu_filename filename)
+int newmenu_do2(const menu_title title, const menu_subtitle subtitle, const ranges::subrange<newmenu_item *> items, const newmenu_subfunction subfunction, void *const userdata, const int citem, const menu_filename filename)
 {
 	if (items.size() < 1)
 		return -1;
@@ -531,22 +534,19 @@ int newmenu_do2(const menu_title title, const menu_subtitle subtitle, const part
 
 int newmenu::process_until_closed(newmenu *const menu)
 {
-	bool exists = true;
-	int rval = -1;
-	menu->rval = &rval;
+	auto rval = std::make_shared<int>(-1);
+	menu->rval = rval;
 	// Track to see when the window is freed
 	// Doing this way in case another window is opened on top without its own polling loop
-	menu->track(&exists);
-
 	// newmenu_do2 and simpler get their own event loop
 	// This is so the caller doesn't have to provide a callback that responds to EVENT_NEWMENU_SELECTED
-	while (exists)
+	for (const auto exists = menu->track(); *exists;)
 		event_process();
 
 	/* menu is now a pointer to freed memory, and cannot be accessed
 	 * further
 	 */
-	return rval;
+	return *rval;
 }
 
 namespace {
@@ -679,14 +679,19 @@ static void newmenu_scroll(newmenu *const menu, const int amount)
 			menu->scroll_offset = nitems - menu->max_on_menu;
 		return;
 	}
+	/* Otherwise, at least one element is not of type text.  Find that element.
+	 */
 	const auto &range = menu->items;
 	const auto predicate = [](const newmenu_item &n) {
 		return n.type != nm_type::text;
 	};
-	const auto first = std::find_if(range.begin(), range.end(), predicate);
+	const auto &&first = ranges::find_if(range, predicate);
 	if (first == range.end())
+		/* This should not happen.  If every entry is of type `nm_type::text`,
+		 * then `menu->all_text` should have been true.
+		 */
 		return;
-	const auto rlast = std::find_if(range.rbegin(), std::reverse_iterator<newmenu_item *>(first), predicate).base();
+	const auto &&rlast = ranges::find_if(std::reverse_iterator(range.end()), std::reverse_iterator(first), predicate).base();
 	/* `first == rlast` should not happen, since that would mean that
 	 * there are no elements in `range` for which `predicate` is true.
 	 * If there are no such elements, then `first == range.end()` should
@@ -824,14 +829,14 @@ static void check_apply_mouse_scroll(newmenu *const menu, const grs_canvas &canv
 	}
 }
 
-static window_event_result newmenu_mouse(const d_event &event, newmenu *menu, int button)
+static window_event_result newmenu_mouse(const d_event &event, newmenu *menu, const mbtn button)
 {
 	int old_choice, mx=0, my=0, mz=0, x1 = 0, x2, y1, y2, changed = 0;
 	grs_canvas &menu_canvas = menu->w_canv;
 
 	switch (button)
 	{
-		case MBTN_LEFT:
+		case mbtn::left:
 		{
 			auto &canvas = menu_canvas;
 
@@ -999,7 +1004,7 @@ static window_event_result newmenu_mouse(const d_event &event, newmenu *menu, in
 			}
 			break;
 		}
-		case MBTN_RIGHT:
+		case mbtn::right:
 			if (menu->mouse_state)
 			{
 				if (!(menu->citem > -1))
@@ -1017,13 +1022,15 @@ static window_event_result newmenu_mouse(const d_event &event, newmenu *menu, in
 				}
 			}
 			break;
-		case MBTN_Z_UP:
+		case mbtn::z_up:
 			if (menu->mouse_state)
 				newmenu_scroll(menu, -1);
 			break;
-		case MBTN_Z_DOWN:
+		case mbtn::z_down:
 			if (menu->mouse_state)
 				newmenu_scroll(menu, 1);
+			break;
+		default:
 			break;
 	}
 
@@ -1185,7 +1192,7 @@ static window_event_result newmenu_key_command(const d_event &event, newmenu *co
 					changed = 1;
 				rval = window_event_result::handled;
 			}
-			else if (const auto im = citem.input_or_menu(); citem.value < im->text_len)
+			else if (const auto im = citem.input_or_menu(); citem.value < im->text_len || citem.value == -1)
 			{
 				auto ascii = key_ascii();
 				if (ascii < 255)
@@ -1606,15 +1613,15 @@ window_event_result newmenu::event_handler(const d_event &event)
 		case EVENT_MOUSE_BUTTON_DOWN:
 		case EVENT_MOUSE_BUTTON_UP:
 		{
-			int button = event_mouse_get_button(event);
 			mouse_state = event.type == EVENT_MOUSE_BUTTON_DOWN;
+			const auto button = event_mouse_get_button(event);
 			return newmenu_mouse(event, this, button);
 		}
 
 		case EVENT_KEY_COMMAND:
 			return newmenu_key_command(event, this);
 		case EVENT_IDLE:
-			if (!(Game_mode & GM_MULTI && Game_wind))
+			if (!(Game_mode & GM_MULTI) || !Game_wind || !Game_wind->is_visible())
 				timer_delay2(CGameArg.SysMaxFPS);
 			break;
 		case EVENT_WINDOW_DRAW:
@@ -1627,7 +1634,7 @@ window_event_result newmenu::event_handler(const d_event &event)
 	return window_event_result::ignored;
 }
 
-int (vnm_messagebox_aN)(const menu_title title, const nm_messagebox_tie &tie, const char *format, ...)
+int nm_messagebox(const menu_title title, const nm_messagebox_tie &tie, const char *format, ...)
 {
 	va_list args;
 	char nm_text[MESSAGEBOX_TEXT_SIZE];
@@ -1747,11 +1754,11 @@ static void update_scroll_position(listbox_layout &lb)
 		lb.first_item = 0;
 }
 
-static window_event_result listbox_mouse(const d_event &event, listbox *lb, int button)
+static window_event_result listbox_mouse(const d_event &event, listbox *lb, const mbtn button)
 {
 	switch (button)
 	{
-		case MBTN_LEFT:
+		case mbtn::left:
 		{
 			if (lb->mouse_state)
 			{
@@ -1806,7 +1813,7 @@ static window_event_result listbox_mouse(const d_event &event, listbox *lb, int 
 			}
 			break;
 		}
-		case MBTN_RIGHT:
+		case mbtn::right:
 		{
 			if (lb->allow_abort_flag && lb->mouse_state) {
 				lb->citem = -1;
@@ -1814,7 +1821,7 @@ static window_event_result listbox_mouse(const d_event &event, listbox *lb, int 
 			}
 			break;
 		}
-		case MBTN_Z_UP:
+		case mbtn::z_up:
 		{
 			if (lb->mouse_state)
 			{
@@ -1823,7 +1830,7 @@ static window_event_result listbox_mouse(const d_event &event, listbox *lb, int 
 			}
 			break;
 		}
-		case MBTN_Z_DOWN:
+		case mbtn::z_down:
 		{
 			if (lb->mouse_state)
 			{
@@ -2126,7 +2133,7 @@ window_event_result listbox::event_handler(const d_event &event)
 		case EVENT_IDLE:
 			if (!(Game_mode & GM_MULTI && Game_wind))
 				timer_delay2(CGameArg.SysMaxFPS);
-			return listbox_mouse(event, this, -1);
+			return window_event_result::ignored;
 		case EVENT_WINDOW_DRAW:
 			return listbox_draw(this);
 		case EVENT_WINDOW_CLOSE:

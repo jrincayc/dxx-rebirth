@@ -35,16 +35,16 @@ namespace dcx {
 
 const std::array<file_extension_t, 1> archive_exts{{"dxa"}};
 
-char *PHYSFSX_fgets_t::get(char *const buf, std::size_t n, PHYSFS_File *const fp)
+char *PHYSFSX_fgets_t::get(const std::span<char> buf, PHYSFS_File *const fp)
 {
-	PHYSFS_sint64 r = PHYSFS_read(fp, buf, sizeof(*buf), n - 1);
+	const PHYSFS_sint64 r = PHYSFS_read(fp, buf.data(), 1, buf.size() - 1);
 	if (r <= 0)
-		return DXX_POISON_MEMORY(buf, buf + n, 0xcc), nullptr;
-	char *p = buf;
+		return DXX_POISON_MEMORY(buf, 0xcc), nullptr;
+	auto p = buf.begin();
 	const auto cleanup = [&]{
-		return *p = 0, DXX_POISON_MEMORY(p + 1, buf + n, 0xcc), p;
+		return *p = 0, DXX_POISON_MEMORY(buf.subspan((p + 1) - buf.begin()), 0xcc), &*p;
 	};
-	char *const e = &buf[r];
+	const auto e = std::next(p, r);
 	for (;;)
 	{
 		if (p == e)
@@ -71,7 +71,7 @@ char *PHYSFSX_fgets_t::get(char *const buf, std::size_t n, PHYSFS_File *const fp
 	return cleanup();
 }
 
-int PHYSFSX_checkMatchingExtension(const char *filename, const partial_range_t<const file_extension_t *> range)
+int PHYSFSX_checkMatchingExtension(const char *filename, const ranges::subrange<const file_extension_t *> range)
 {
 	const char *ext = strrchr(filename, '.');
 	if (!ext)
@@ -218,7 +218,7 @@ bool PHYSFSX_init(int argc, char *argv[])
 		PHYSFS_mount(p, nullptr, 1);
 	}
 #if DXX_USE_SHAREPATH
-	else if (!GameArg.SysNoHogDir)
+	else if (!CGameArg.SysNoHogDir)
 	{
 		con_puts(CON_DEBUG, "PHYSFS: append sharepath directory \"" DXX_SHAREPATH "\" to search path");
 		PHYSFS_mount(DXX_SHAREPATH, nullptr, 1);
@@ -403,7 +403,7 @@ namespace dcx {
 
 int PHYSFSX_getRealPath(const char *stdPath, std::array<char, PATH_MAX> &realPath)
 {
-	DXX_POISON_MEMORY(realPath.data(), realPath.size(), 0xdd);
+	DXX_POISON_MEMORY(std::span(realPath), 0xdd);
 	const char *realDir = PHYSFS_getRealDir(stdPath);
 	if (!realDir)
 	{
@@ -473,8 +473,8 @@ int PHYSFSX_getRealPath(const char *stdPath, std::array<char, PATH_MAX> &realPat
 int PHYSFSX_rename(const char *oldpath, const char *newpath)
 {
 	std::array<char, PATH_MAX> old, n;
-	PHYSFSX_getRealPath(oldpath, old);
-	PHYSFSX_getRealPath(newpath, n);
+	if (!PHYSFSX_getRealPath(oldpath, old) || !PHYSFSX_getRealPath(newpath, n))
+		return -1;
 	return (rename(old.data(), n.data()) == 0);
 }
 
@@ -504,7 +504,7 @@ static inline PHYSFSX_uncounted_list PHYSFSX_findPredicateFiles(const char *path
 
 // Find files at path that have an extension listed in exts
 // The extension list exts must be NULL-terminated, with each ext beginning with a '.'
-PHYSFSX_uncounted_list PHYSFSX_findFiles(const char *path, const partial_range_t<const file_extension_t *> exts)
+PHYSFSX_uncounted_list PHYSFSX_findFiles(const char *path, const ranges::subrange<const file_extension_t *> exts)
 {
 	const auto predicate = [&](const char *i) {
 		return PHYSFSX_checkMatchingExtension(i, exts);
@@ -514,7 +514,7 @@ PHYSFSX_uncounted_list PHYSFSX_findFiles(const char *path, const partial_range_t
 
 // Same function as above but takes a real directory as second argument, only adding files originating from this directory.
 // This can be used to further seperate files in search path but it must be made sure realpath is properly formatted.
-PHYSFSX_uncounted_list PHYSFSX_findabsoluteFiles(const char *path, const char *realpath, const partial_range_t<const file_extension_t *> exts)
+PHYSFSX_uncounted_list PHYSFSX_findabsoluteFiles(const char *path, const char *realpath, const ranges::subrange<const file_extension_t *> exts)
 {
 	const auto predicate = [&](const char *i) {
 		return PHYSFSX_checkMatchingExtension(i, exts) && (!strcmp(PHYSFS_getRealDir(i), realpath));
@@ -583,8 +583,7 @@ void PHYSFSX_addArchiveContent()
 	range_for (const auto i, list)
 	{
 		std::array<char, PATH_MAX> realfile;
-		PHYSFSX_getRealPath(i,realfile);
-		if (PHYSFS_mount(realfile.data(), nullptr, 0))
+		if (PHYSFSX_getRealPath(i, realfile) && PHYSFS_mount(realfile.data(), nullptr, 0))
 		{
 			con_printf(CON_DEBUG, "PHYSFS: Added %s to Search Path",realfile.data());
 			content_updated = 1;
@@ -600,8 +599,7 @@ void PHYSFSX_addArchiveContent()
 		char demofile[PATH_MAX];
 		snprintf(demofile, sizeof(demofile), DEMO_DIR "%s", i);
 		std::array<char, PATH_MAX> realfile;
-		PHYSFSX_getRealPath(demofile,realfile);
-		if (PHYSFS_mount(realfile.data(), DEMO_DIR, 0))
+		if (PHYSFSX_getRealPath(demofile, realfile) && PHYSFS_mount(realfile.data(), DEMO_DIR, 0))
 		{
 			con_printf(CON_DEBUG, "PHYSFS: Added %s to " DEMO_DIR, realfile.data());
 			content_updated = 1;
@@ -626,8 +624,8 @@ void PHYSFSX_removeArchiveContent()
 	range_for (const auto i, list)
 	{
 		std::array<char, PATH_MAX> realfile;
-		PHYSFSX_getRealPath(i, realfile);
-		PHYSFS_unmount(realfile.data());
+		if (PHYSFSX_getRealPath(i, realfile))
+			PHYSFS_unmount(realfile.data());
 	}
 	list.reset();
 	// find files in DEMO_DIR ...
@@ -638,8 +636,8 @@ void PHYSFSX_removeArchiveContent()
 		char demofile[PATH_MAX];
 		snprintf(demofile, sizeof(demofile), DEMO_DIR "%s", i);
 		std::array<char, PATH_MAX> realfile;
-		PHYSFSX_getRealPath(demofile,realfile);
-		PHYSFS_unmount(realfile.data());
+		if (PHYSFSX_getRealPath(demofile, realfile))
+			PHYSFS_unmount(realfile.data());
 	}
 }
 
